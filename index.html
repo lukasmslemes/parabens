@@ -5,6 +5,117 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>🌸 Jogo da Memória 🌸</title>
 <link href="https://fonts.googleapis.com/css2?family=Pacifico&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+
+<!-- Firebase -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged, updateProfile } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { getFirestore, doc, setDoc, getDoc, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyATJAen6Qtzm-uOqHtD6ubQUDmVdqG1BUM",
+  authDomain: "jogodamemoria-c5354.firebaseapp.com",
+  projectId: "jogodamemoria-c5354",
+  storageBucket: "jogodamemoria-c5354.firebasestorage.app",
+  messagingSenderId: "438539724323",
+  appId: "1:438539724323:web:f79d8dddeb9c8bac373396",
+  measurementId: "G-9Q7CG6FJ7T"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const googleProvider = new GoogleAuthProvider();
+
+onAuthStateChanged(auth, user => {
+  window._currentUser = user;
+  updateAuthUI(user);
+  if (user) window._loadLeaderboard && window._loadLeaderboard();
+});
+
+function updateAuthUI(user) {
+  const out = document.getElementById('authLoggedOut');
+  const inn = document.getElementById('authLoggedIn');
+  const nm  = document.getElementById('userName');
+  if (user) {
+    out.style.display = 'none';
+    inn.style.display = 'flex';
+    nm.textContent = user.displayName || user.email.split('@')[0];
+  } else {
+    out.style.display = 'flex';
+    inn.style.display = 'none';
+  }
+}
+
+window.saveScore = async function(score, mode) {
+  const user = window._currentUser;
+  if (!user) return;
+  const ref = doc(db, 'scores', user.uid);
+  const snap = await getDoc(ref);
+  const field = mode === 'hard' ? 'bestHard' : 'bestNormal';
+  const existing = snap.exists() ? (snap.data()[field] || 0) : 0;
+  if (score > existing) {
+    await setDoc(ref, {
+      name: user.displayName || user.email.split('@')[0],
+      email: user.email,
+      [field]: score,
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
+    window._loadLeaderboard && window._loadLeaderboard();
+  }
+};
+
+window._loadLeaderboard = async function() {
+  try {
+    const snap = await getDocs(collection(db, 'scores'));
+    const players = [];
+    snap.forEach(d => players.push({ id: d.id, ...d.data() }));
+    window.renderLeaderboard && window.renderLeaderboard(players);
+  } catch(e) { console.log('lb error', e); }
+};
+
+window.doGoogleLogin = async function() {
+  try {
+    await signInWithPopup(auth, googleProvider);
+    closeAuthModal();
+    showToast('Login feito! 💕');
+  } catch(e) { showToast('Erro no login Google 😔', true); }
+};
+
+window.doEmailAuth = async function(mode) {
+  const email = document.getElementById('authEmail').value.trim();
+  const pass  = document.getElementById('authPass').value;
+  const name  = document.getElementById('authName').value.trim();
+  if (!email || !pass) { showToast('Preencha todos os campos!', true); return; }
+  try {
+    if (mode === 'register') {
+      const cred = await createUserWithEmailAndPassword(auth, email, pass);
+      if (name) await updateProfile(cred.user, { displayName: name });
+      showToast('Conta criada! 🌸');
+    } else {
+      await signInWithEmailAndPassword(auth, email, pass);
+      showToast('Bem-vinda de volta! 💕');
+    }
+    closeAuthModal();
+  } catch(e) {
+    const msgs = {
+      'auth/email-already-in-use': 'E-mail já cadastrado!',
+      'auth/wrong-password': 'Senha incorreta!',
+      'auth/user-not-found': 'Usuário não encontrado!',
+      'auth/weak-password': 'Senha fraca (mín. 6 caracteres)!',
+      'auth/invalid-email': 'E-mail inválido!',
+      'auth/invalid-credential': 'E-mail ou senha incorretos!',
+    };
+    showToast(msgs[e.code] || 'Erro: ' + e.message, true);
+  }
+};
+
+window.doLogout = async function() {
+  await signOut(auth);
+  showToast('Até logo! 🌸');
+};
+</script>
+
 <style>
   :root {
     --pink: #f48fb1;
@@ -19,6 +130,7 @@
     --white: #ffffff;
     --text: #6a3045;
     --card-back: linear-gradient(135deg, #f48fb1 0%, #ce93d8 50%, #80deea 100%);
+    --card-back-hard: linear-gradient(135deg, #ce93d8 0%, #80deea 50%, #f48fb1 100%);
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -31,7 +143,6 @@
     position: relative;
   }
 
-  /* Floating background decorations */
   body::before {
     content: '';
     position: fixed;
@@ -60,11 +171,37 @@
     100% { transform: translateY(-120px) rotate(360deg); opacity: 0; }
   }
 
+  /* AUTH BAR */
+  .auth-bar {
+    position: relative; z-index: 10;
+    display: flex; justify-content: flex-end; align-items: center;
+    gap: 0.6rem; padding: 0.8rem 1.2rem 0;
+  }
+  #authLoggedOut { display: flex; gap: 0.5rem; align-items: center; }
+  #authLoggedIn  { display: none; gap: 0.7rem; align-items: center; }
+  .auth-name {
+    font-size: 0.85rem; font-weight: 800;
+    color: var(--text); display: flex; align-items: center; gap: 0.3rem;
+  }
+  .btn-auth {
+    background: white; border: 2px solid var(--pink-light);
+    color: var(--pink-deep); border-radius: 999px;
+    padding: 0.35rem 1rem; font-family: 'Nunito', sans-serif;
+    font-size: 0.8rem; font-weight: 800; cursor: pointer;
+    transition: all 0.2s; box-shadow: 0 2px 8px rgba(244,143,177,0.2);
+  }
+  .btn-auth:hover { background: var(--pink-light); transform: translateY(-1px); }
+  .btn-auth.primary {
+    background: linear-gradient(135deg, var(--pink-deep), var(--lilac));
+    color: white; border-color: transparent;
+  }
+  .btn-auth.primary:hover { box-shadow: 0 4px 16px rgba(233,30,140,0.4); }
+
   header {
     position: relative;
     z-index: 10;
     text-align: center;
-    padding: 2rem 1rem 1rem;
+    padding: 1.2rem 1rem 0.5rem;
   }
 
   .title {
@@ -81,19 +218,35 @@
     to { transform: scale(1) rotate(0deg); opacity: 1; }
   }
 
-  .subtitle {
-    color: var(--lilac);
-    font-size: 1.1rem;
-    font-weight: 600;
-    margin-top: 0.4rem;
-    letter-spacing: 0.5px;
+  /* SCORE PILLS */
+  .score-bar {
+    display: flex; justify-content: center; gap: 0.7rem;
+    margin: 0.7rem auto 0; flex-wrap: wrap;
   }
+  .score-pill {
+    background: linear-gradient(135deg, var(--pink-deep), var(--lilac));
+    color: white; border-radius: 999px; padding: 0.35rem 1.1rem;
+    font-weight: 800; font-size: 0.9rem;
+    box-shadow: 0 4px 16px rgba(233,30,140,0.3);
+    display: flex; align-items: center; gap: 0.35rem;
+    transition: all 0.2s;
+  }
+  .score-pill.hard { background: linear-gradient(135deg, #7c3aed, #db2777); }
+  .combo-pill {
+    background: linear-gradient(135deg, #f59e0b, #ef4444);
+    color: white; border-radius: 999px; padding: 0.35rem 1.1rem;
+    font-weight: 800; font-size: 0.9rem;
+    display: none; align-items: center; gap: 0.35rem;
+    box-shadow: 0 4px 16px rgba(245,158,11,0.4);
+    animation: comboPop 0.3s cubic-bezier(0.34,1.56,0.64,1);
+  }
+  @keyframes comboPop { from{transform:scale(0.7)} to{transform:scale(1)} }
 
   .stats-bar {
     display: flex;
     justify-content: center;
-    gap: 1.5rem;
-    margin: 1.2rem auto 0;
+    gap: 1rem;
+    margin: 0.7rem auto 0;
     flex-wrap: wrap;
   }
 
@@ -111,36 +264,86 @@
     gap: 0.4rem;
     transition: transform 0.2s;
   }
-
   .stat-pill:hover { transform: scale(1.05); }
   .stat-pill span { color: var(--pink-deep); font-size: 1.1rem; }
+
+  /* HARD MODE TIMER BAR */
+  .timer-bar-wrap {
+    max-width: 480px; margin: 0.6rem auto 0;
+    display: none;
+  }
+  .timer-bar-wrap.show { display: block; }
+  .timer-label { text-align: center; font-size: 0.78rem; font-weight: 800; color: #7c3aed; margin-bottom: 0.3rem; }
+  .timer-track { background: #ede9fe; border-radius: 999px; height: 8px; overflow: hidden; }
+  .timer-fill {
+    height: 100%; border-radius: 999px;
+    background: linear-gradient(90deg, #7c3aed, #db2777);
+    transition: width 1s linear;
+  }
+
+  /* MODE & ACTION BUTTONS */
+  .btn-row {
+    display: flex; justify-content: center; gap: 0.7rem;
+    margin: 0.8rem auto 0; flex-wrap: wrap;
+  }
 
   .btn {
     background: linear-gradient(135deg, var(--pink-deep), var(--lilac));
     color: white;
     border: none;
     border-radius: 999px;
-    padding: 0.7rem 2rem;
+    padding: 0.65rem 1.6rem;
     font-family: 'Nunito', sans-serif;
-    font-size: 1rem;
+    font-size: 0.95rem;
     font-weight: 800;
     cursor: pointer;
     box-shadow: 0 6px 20px rgba(233,30,140,0.35);
     transition: transform 0.2s, box-shadow 0.2s;
-    letter-spacing: 0.5px;
-    margin-top: 1rem;
+    letter-spacing: 0.3px;
   }
-
   .btn:hover { transform: translateY(-3px) scale(1.05); box-shadow: 0 10px 28px rgba(233,30,140,0.45); }
   .btn:active { transform: translateY(0) scale(0.98); }
+  .btn.active { box-shadow: 0 0 0 3px white, 0 0 0 5px var(--pink-deep); }
+
+  .btn-hard {
+    background: linear-gradient(135deg, #7c3aed, #db2777);
+    box-shadow: 0 6px 20px rgba(124,58,237,0.35);
+  }
+  .btn-hard:hover { box-shadow: 0 10px 28px rgba(124,58,237,0.5); }
+  .btn-hard.active { box-shadow: 0 0 0 3px white, 0 0 0 5px #7c3aed; }
+
+  .btn-outline {
+    background: white;
+    color: var(--pink-deep);
+    border: 2px solid var(--pink-light);
+    box-shadow: 0 4px 12px rgba(244,143,177,0.2);
+  }
+  .btn-outline:hover { background: var(--pink-light); box-shadow: 0 6px 16px rgba(244,143,177,0.3); }
+
+  /* TABS */
+  .tabs {
+    display: flex; justify-content: center; gap: 0.5rem;
+    margin: 0.8rem auto 0; position: relative; z-index: 10;
+  }
+  .tab {
+    background: white; border: 2px solid var(--pink-light);
+    color: var(--text); border-radius: 999px; padding: 0.38rem 1.1rem;
+    font-family: 'Nunito', sans-serif; font-size: 0.85rem; font-weight: 800;
+    cursor: pointer; transition: all 0.2s;
+  }
+  .tab.active {
+    background: linear-gradient(135deg, var(--pink-deep), var(--lilac));
+    color: white; border-color: transparent;
+    box-shadow: 0 4px 12px rgba(233,30,140,0.3);
+  }
 
   /* BOARD */
   main {
     position: relative;
     z-index: 10;
-    max-width: 780px;
-    margin: 1.5rem auto 2rem;
-    padding: 0 1rem;
+    max-width: 860px;
+    margin: 1.2rem auto 0;
+    padding: 0 1rem 3rem; /* padding-bottom pra modo difícil */
   }
 
   .board {
@@ -149,11 +352,17 @@
     gap: 0.7rem;
   }
 
-  @media (max-width: 540px) {
-    .board { grid-template-columns: repeat(4, 1fr); gap: 0.5rem; }
+  .board.hard {
+    grid-template-columns: repeat(8, 1fr);
+    gap: 0.5rem;
   }
 
-  /* CARD */
+  @media (max-width: 600px) {
+    .board { grid-template-columns: repeat(4, 1fr); gap: 0.5rem; }
+    .board.hard { grid-template-columns: repeat(5, 1fr); gap: 0.4rem; }
+  }
+
+  /* CARD — design original */
   .card {
     aspect-ratio: 1;
     perspective: 800px;
@@ -188,12 +397,14 @@
     background: var(--card-back);
     border: 3px solid rgba(255,255,255,0.6);
   }
+  .card-back.hard-back { background: var(--card-back-hard); }
 
   .card-back::before {
     content: '🌸';
     font-size: clamp(1.8rem, 4vw, 2.5rem);
     filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
   }
+  .card-back.hard-back::before { content: '💫'; }
 
   .card-back::after {
     content: '';
@@ -216,7 +427,6 @@
     font-size: clamp(2rem, 5vw, 3rem);
     line-height: 1;
     filter: drop-shadow(0 2px 6px rgba(0,0,0,0.12));
-    animation: none;
   }
 
   .card-front .label {
@@ -228,7 +438,6 @@
     line-height: 1.1;
   }
 
-  /* Matched glow */
   .card.matched .card-face.card-front {
     background: linear-gradient(135deg, #fff0f5, #f8e8ff);
     border-color: var(--gold);
@@ -243,13 +452,28 @@
     100% { transform: rotateY(180deg) scale(1); }
   }
 
-  /* Hover effect on unflipped cards */
   .card:not(.flipped):not(.matched) .card-inner:hover {
     transform: translateY(-4px) scale(1.04);
     filter: brightness(1.05);
   }
 
-  /* HEARTS burst on match */
+  /* LEADERBOARD */
+  .leaderboard-panel {
+    background: white; border-radius: 24px;
+    border: 2px solid var(--pink-light);
+    box-shadow: 0 8px 30px rgba(244,143,177,0.15);
+    padding: 1.5rem; max-width: 480px; margin: 0 auto;
+  }
+  .leaderboard-panel h3 {
+    font-family: 'Pacifico', cursive; color: var(--pink-deep);
+    font-size: 1.4rem; text-align: center; margin-bottom: 1.2rem;
+  }
+  .lb-table { width: 100%; border-collapse: collapse; }
+  .lb-table td { padding: 0.65rem 0.5rem; border-bottom: 1px solid var(--pink-light); font-size: 0.9rem; }
+  .lb-table tr:last-child td { border-bottom: none; }
+  .no-login-msg { text-align: center; padding: 2rem; color: var(--lilac); font-size: 0.9rem; font-weight: 600; }
+
+  /* BURST */
   .burst {
     position: fixed;
     pointer-events: none;
@@ -257,7 +481,6 @@
     font-size: 1.5rem;
     animation: burstAnim 1s ease forwards;
   }
-
   @keyframes burstAnim {
     0% { transform: translate(-50%,-50%) scale(0); opacity: 1; }
     60% { opacity: 1; }
@@ -276,15 +499,13 @@
     justify-content: center;
     flex-direction: column;
   }
-
   .overlay.show { display: flex; animation: fadeIn 0.5s ease; }
-
   @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
   .victory-box {
     background: white;
     border-radius: 28px;
-    padding: 2.5rem 2rem;
+    padding: 2rem 2.2rem;
     text-align: center;
     box-shadow: 0 20px 60px rgba(233,30,140,0.25);
     border: 3px solid var(--pink-light);
@@ -294,369 +515,655 @@
     overflow-y: auto;
     animation: victoryPop 0.7s cubic-bezier(0.34,1.56,0.64,1) both;
   }
-
   @keyframes victoryPop {
     from { transform: scale(0.3) rotate(-10deg); opacity: 0; }
     to { transform: scale(1) rotate(0deg); opacity: 1; }
   }
 
   .victory-box .big-emoji { font-size: 4rem; display: block; margin-bottom: 0.5rem; }
-
   .victory-box h2 {
     font-family: 'Pacifico', cursive;
-    color: var(--pink-deep);
-    font-size: 2.2rem;
+    color: var(--pink-deep); font-size: 2.2rem;
     text-shadow: 2px 2px 0 rgba(244,143,177,0.4);
-    margin-bottom: 0.6rem;
+    margin-bottom: 0.5rem;
   }
+
+  .victory-score {
+    background: linear-gradient(135deg, var(--pink-deep), var(--lilac));
+    color: white; border-radius: 16px; padding: 0.9rem;
+    margin-bottom: 1rem;
+  }
+  .victory-score .score-num { font-size: 2.5rem; font-weight: 800; font-family: 'Pacifico', cursive; }
+  .victory-score .score-label { font-size: 0.78rem; opacity: 0.85; }
 
   .victory-box p {
     color: var(--text);
-    font-size: 1.05rem;
+    font-size: 0.95rem;
     font-weight: 600;
-    line-height: 1.6;
-    margin-bottom: 1.5rem;
+    line-height: 1.7;
+    margin-bottom: 1rem;
   }
 
   .victory-box .final-stats {
     display: flex;
-    gap: 1rem;
+    gap: 0.7rem;
     justify-content: center;
-    margin-bottom: 1.5rem;
+    margin-bottom: 0.8rem;
     flex-wrap: wrap;
   }
-
   .final-stat {
     background: var(--pink-light);
     border-radius: 12px;
-    padding: 0.5rem 1rem;
+    padding: 0.45rem 0.9rem;
     font-weight: 800;
     color: var(--text);
-    font-size: 0.9rem;
+    font-size: 0.85rem;
+  }
+  .score-saved { font-size: 0.78rem; color: var(--lilac); margin-bottom: 0.8rem; font-weight: 700; }
+
+  /* AUTH MODAL */
+  .auth-modal-bg {
+    display: none; position: fixed; inset: 0;
+    background: rgba(100,50,70,0.45); backdrop-filter: blur(4px);
+    z-index: 300; align-items: center; justify-content: center;
+  }
+  .auth-modal-bg.show { display: flex; animation: fadeIn 0.2s ease; }
+
+  .auth-modal {
+    background: white; border-radius: 24px; padding: 2rem;
+    max-width: 380px; width: 92%; position: relative;
+    box-shadow: 0 20px 60px rgba(233,30,140,0.2);
+    border: 2px solid var(--pink-light);
+    animation: victoryPop 0.4s cubic-bezier(0.34,1.56,0.64,1) both;
+  }
+  .auth-modal h3 {
+    font-family: 'Pacifico', cursive; color: var(--pink-deep);
+    font-size: 1.5rem; text-align: center; margin-bottom: 1.2rem;
   }
 
+  .auth-tabs {
+    display: flex; gap: 0.4rem; margin-bottom: 1.2rem;
+    background: var(--pink-light); border-radius: 999px; padding: 0.3rem;
+  }
+  .auth-tab {
+    flex: 1; text-align: center; padding: 0.4rem;
+    border-radius: 999px; font-weight: 800; font-size: 0.85rem;
+    cursor: pointer; transition: all 0.2s; color: var(--text);
+  }
+  .auth-tab.active {
+    background: white; color: var(--pink-deep);
+    box-shadow: 0 2px 8px rgba(233,30,140,0.2);
+  }
+
+  .auth-field { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 0.8rem; }
+  .auth-field label { font-size: 0.75rem; font-weight: 800; color: var(--text); text-transform: uppercase; letter-spacing: 0.5px; }
+  .auth-field input {
+    padding: 0.6rem 0.9rem; border: 2px solid var(--pink-light);
+    border-radius: 10px; font-family: 'Nunito', sans-serif; font-size: 0.9rem;
+    outline: none; transition: border-color 0.2s;
+  }
+  .auth-field input:focus { border-color: var(--pink-deep); }
+
+  .btn-google {
+    width: 100%; padding: 0.65rem; border-radius: 10px;
+    border: 2px solid #e5e7eb; background: white;
+    font-family: 'Nunito', sans-serif; font-size: 0.9rem; font-weight: 700;
+    cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 0.5rem;
+    transition: all 0.2s; margin-bottom: 0.8rem;
+  }
+  .btn-google:hover { background: #f9fafb; }
+
+  .btn-submit {
+    width: 100%; padding: 0.65rem;
+    background: linear-gradient(135deg, var(--pink-deep), var(--lilac));
+    color: white; border: none; border-radius: 10px;
+    font-family: 'Nunito', sans-serif; font-size: 0.95rem; font-weight: 800;
+    cursor: pointer; transition: all 0.2s;
+    box-shadow: 0 4px 16px rgba(233,30,140,0.3);
+  }
+  .btn-submit:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(233,30,140,0.4); }
+
+  .auth-divider {
+    text-align: center; color: #aaa; font-size: 0.8rem; margin: 0.7rem 0;
+    position: relative;
+  }
+  .auth-divider::before, .auth-divider::after {
+    content: ''; position: absolute; top: 50%; width: 35%; height: 1px; background: #e5e7eb;
+  }
+  .auth-divider::before { left: 0; } .auth-divider::after { right: 0; }
+
+  .auth-close {
+    position: absolute; top: 1rem; right: 1rem;
+    background: none; border: none; font-size: 1.2rem; cursor: pointer; color: #aaa;
+  }
+  .auth-close:hover { color: var(--pink-deep); }
+
+  /* TOAST */
+  .toast {
+    position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%);
+    background: white; border: 2px solid var(--pink-light); border-radius: 999px;
+    padding: 0.6rem 1.4rem; font-size: 0.85rem; font-weight: 700; color: var(--text);
+    box-shadow: 0 8px 24px rgba(244,143,177,0.3); z-index: 1000;
+    animation: toastIn 0.3s cubic-bezier(0.34,1.3,0.64,1);
+    white-space: nowrap;
+  }
+  .toast.err { border-color: #fca5a5; color: #dc2626; }
+  @keyframes toastIn { from{transform:translateX(-50%) translateY(20px);opacity:0} to{transform:translateX(-50%) translateY(0);opacity:1} }
+
+  /* CONFETTI */
   .confetti-piece {
-    position: fixed;
-    width: 10px; height: 10px;
-    border-radius: 2px;
-    pointer-events: none;
-    z-index: 300;
+    position: fixed; pointer-events: none; z-index: 300;
     animation: confettiFall linear forwards;
   }
-
   @keyframes confettiFall {
     0% { transform: translateY(-20px) rotate(0deg); opacity: 1; }
     100% { transform: translateY(110vh) rotate(720deg); opacity: 0.3; }
   }
+
+  audio { display: none; }
 </style>
 </head>
 <body>
 
-<!-- Floating background decorations -->
+<audio id="victoryMusic" src="parabens.mp3" loop></audio>
 <div id="floatingDecors"></div>
+
+<!-- AUTH BAR -->
+<div class="auth-bar">
+  <div id="authLoggedOut">
+    <button class="btn-auth" onclick="openAuthModal('login')">Entrar</button>
+    <button class="btn-auth primary" onclick="openAuthModal('register')">Criar conta</button>
+  </div>
+  <div id="authLoggedIn">
+    <span class="auth-name">🌸 <span id="userName"></span></span>
+    <button class="btn-auth" onclick="doLogout()">Sair</button>
+  </div>
+</div>
 
 <header>
   <h1 class="title">🌸 Jogo da Memória 🌸</h1>
-  <p class="subtitle">✨ Encontre todos os pares! ✨</p>
+
+  <!-- SCORE -->
+  <div class="score-bar">
+    <div class="score-pill" id="scoreDisplay">⭐ 0 pts</div>
+    <div class="combo-pill" id="comboDisplay">🔥 Combo x<span id="comboNum">1</span></div>
+  </div>
+
   <div class="stats-bar">
     <div class="stat-pill"><span>🔄</span> Tentativas: <strong id="moves">0</strong></div>
-    <div class="stat-pill"><span>💖</span> Pares: <strong id="pairs">0</strong>/10</div>
+    <div class="stat-pill"><span>💖</span> Pares: <strong id="pairs">0</strong>/<strong id="totalPairs">10</strong></div>
     <div class="stat-pill"><span>⏱️</span> Tempo: <strong id="timer">0s</strong></div>
   </div>
-  <button class="btn" onclick="initGame()">🌷 Novo Jogo</button>
+
+  <!-- HARD MODE TIMER BAR -->
+  <div class="timer-bar-wrap" id="timerBarWrap">
+    <div class="timer-label">⏰ <span id="timerLabel">90s</span></div>
+    <div class="timer-track"><div class="timer-fill" id="timerFill" style="width:100%"></div></div>
+  </div>
+
+  <div class="btn-row">
+    <button class="btn active" id="btnNormal" onclick="setMode('normal')">🌸 Normal</button>
+    <button class="btn btn-hard" id="btnHard" onclick="setMode('hard')">💀 Difícil</button>
+    <button class="btn btn-outline" onclick="initGame()">🔄 Novo Jogo</button>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('game')" id="tabGame">🎮 Jogo</button>
+    <button class="tab" onclick="showTab('leaderboard')" id="tabLb">🏆 Placar</button>
+  </div>
 </header>
 
 <main>
-  <div class="board" id="board"></div>
+  <div id="viewGame">
+    <div class="board" id="board"></div>
+  </div>
+
+  <div id="viewLeaderboard" style="display:none; margin-top:1rem;">
+    <div class="leaderboard-panel">
+      <h3>🏆 Placar Global</h3>
+      <div id="lbContent">
+        <p class="no-login-msg">Faça login para ver o placar! 🌸</p>
+      </div>
+    </div>
+  </div>
 </main>
 
-<!-- Victory Overlay -->
-<audio id="victoryMusic" src="parabens.mp3" loop></audio>
+<!-- VICTORY OVERLAY -->
 <div class="overlay" id="overlay">
   <div class="victory-box">
     <span class="big-emoji">🎂</span>
     <h2>Parabéns!</h2>
+    <div class="victory-score">
+      <div class="score-num" id="finalScore">0</div>
+      <div class="score-label">pontos</div>
+    </div>
     <p>
-      Não é novidade que você venceu, você sempre foi melhor que eu e hoje eu admito que eu trapaceava. 🙄<br><br>
+      Não é novidade que você venceu, você sempre foi melhor que eu e hoje eu admito que eu trapaceava. 😅<br><br>
       Fiz essa brincadeira pra desejar parabéns para você, mesmo com nossa distância eu não esqueci de você,
       sempre me lembro dos momentos que tivemos e fico muito feliz por ter acontecido. 💕<br><br>
       Você é uma mulher muito especial na minha vida, te desejo realizações nos seus sonhos e felicidades
       nos seus momentos, principalmente no seu dia!<br><br>
-      <strong>Te amo sempre, minha macaca chiadeira 🐒❤️</strong>
+      <strong>Te amo sempre, minha chiadeira macaca 🐒❤️</strong>
     </p>
     <div class="final-stats">
-      <div class="final-stat">🔄 <span id="finalMoves">0</span> tentativas</div>
+      <div class="final-stat">🔄 <span id="finalMoves">0</span> tent.</div>
       <div class="final-stat">⏱️ <span id="finalTime">0s</span></div>
+      <div class="final-stat" id="finalMode">🌸 Normal</div>
     </div>
+    <div class="score-saved" id="scoreSaved"></div>
     <button class="btn" onclick="closeOverlay()">🌸 Jogar de Novo</button>
   </div>
 </div>
 
+<!-- AUTH MODAL -->
+<div class="auth-modal-bg" id="authModalBg">
+  <div class="auth-modal">
+    <button class="auth-close" onclick="closeAuthModal()">✕</button>
+    <h3>🌸 Bem-vinda!</h3>
+    <div class="auth-tabs">
+      <div class="auth-tab active" id="authTabLogin" onclick="switchAuthTab('login')">Entrar</div>
+      <div class="auth-tab" id="authTabRegister" onclick="switchAuthTab('register')">Criar conta</div>
+    </div>
+    <button class="btn-google" onclick="doGoogleLogin()">
+      <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+      Continuar com Google
+    </button>
+    <div class="auth-divider">ou</div>
+    <div id="authNameField" style="display:none">
+      <div class="auth-field">
+        <label>Seu nome</label>
+        <input type="text" id="authName" placeholder="Como quer aparecer no placar?">
+      </div>
+    </div>
+    <div class="auth-field">
+      <label>E-mail</label>
+      <input type="email" id="authEmail" placeholder="seu@email.com">
+    </div>
+    <div class="auth-field">
+      <label>Senha</label>
+      <input type="password" id="authPass" placeholder="••••••••">
+    </div>
+    <button class="btn-submit" id="authSubmitBtn" onclick="doEmailAuth('login')">Entrar 🌸</button>
+  </div>
+</div>
+
 <script>
-// ===================== SOUND ENGINE =====================
-const AudioCtx = window.AudioContext || window.webkitAudioContext;
-let ctx;
-
-function getCtx() {
-  if (!ctx) ctx = new AudioCtx();
-  return ctx;
-}
-
-function playFlipSound() {
-  try {
-    const ac = getCtx();
-    const osc = ac.createOscillator();
-    const gain = ac.createGain();
-    osc.connect(gain);
-    gain.connect(ac.destination);
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(880, ac.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(1200, ac.currentTime + 0.12);
-    gain.gain.setValueAtTime(0.18, ac.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.18);
-    osc.start(ac.currentTime);
-    osc.stop(ac.currentTime + 0.18);
-  } catch(e) {}
-}
-
-function playMatchSound() {
-  try {
-    const ac = getCtx();
-    // Cheerful ascending arpeggio
-    const notes = [523.25, 659.25, 783.99, 1046.5];
-    notes.forEach((freq, i) => {
-      const osc = ac.createOscillator();
-      const gain = ac.createGain();
-      osc.connect(gain);
-      gain.connect(ac.destination);
-      osc.type = 'triangle';
-      osc.frequency.value = freq;
-      const t = ac.currentTime + i * 0.08;
-      gain.gain.setValueAtTime(0, t);
-      gain.gain.linearRampToValueAtTime(0.22, t + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
-      osc.start(t);
-      osc.stop(t + 0.26);
-    });
-  } catch(e) {}
-}
-
-function playVictorySound() {
-  try {
-    const ac = getCtx();
-    const melody = [523,659,784,1047,784,1047,1319];
-    melody.forEach((freq, i) => {
-      const osc = ac.createOscillator();
-      const gain = ac.createGain();
-      osc.connect(gain);
-      gain.connect(ac.destination);
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      const t = ac.currentTime + i * 0.13;
-      gain.gain.setValueAtTime(0, t);
-      gain.gain.linearRampToValueAtTime(0.2, t + 0.03);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
-      osc.start(t);
-      osc.stop(t + 0.36);
-    });
-  } catch(e) {}
-}
-
-// ===================== CARDS DATA =====================
-const CARDS = [
-  { emoji: '🐱', label: 'Gatinho' },
-  { emoji: '🐾', label: 'Patinhas' },
-  { emoji: '🎂', label: 'Bolo de Festa' },
-  { emoji: '🧁', label: 'Cupcake' },
-  { emoji: '🌸', label: 'Flor de Cerejeira' },
-  { emoji: '🌷', label: 'Tulipa' },
-  { emoji: '🍓', label: 'Morango' },
-  { emoji: '🦋', label: 'Borboleta' },
-  { emoji: '🎀', label: 'Laço Rosa' },
-  { emoji: '🌈', label: 'Arco-íris' },
+// ── CARDS ────────────────────────────────────────────────
+const CARDS_NORMAL = [
+  {emoji:'🐱',label:'Gatinho'},{emoji:'🐾',label:'Patinhas'},
+  {emoji:'🎂',label:'Bolo de Festa'},{emoji:'🧁',label:'Cupcake'},
+  {emoji:'🌸',label:'Flor de Cerejeira'},{emoji:'🌷',label:'Tulipa'},
+  {emoji:'🍓',label:'Morango'},{emoji:'🦋',label:'Borboleta'},
+  {emoji:'🎀',label:'Laço Rosa'},{emoji:'🌈',label:'Arco-íris'},
+];
+const CARDS_EXTRA = [
+  {emoji:'🍰',label:'Fatia de Bolo'},{emoji:'🌺',label:'Hibisco'},
+  {emoji:'🦄',label:'Unicórnio'},{emoji:'💎',label:'Diamante'},
+  {emoji:'🍬',label:'Bala'},{emoji:'🌙',label:'Lua'},
+  {emoji:'⭐',label:'Estrela'},{emoji:'🎠',label:'Carrossel'},
+  {emoji:'🍭',label:'Pirulito'},{emoji:'🐣',label:'Pintinho'},
 ];
 
-// ===================== GAME STATE =====================
-let cards = [];
-let flipped = [];
-let matched = [];
-let moves = 0;
-let seconds = 0;
-let timerInterval = null;
-let locked = false;
+// ── STATE ────────────────────────────────────────────────
+let cards=[], flipped=[], matched=[], moves=0, seconds=0;
+let timerInterval=null, hardTimerInterval=null;
+let locked=false, gameMode='normal', timerStarted=false;
+let score=0, combo=0, hardTimeLeft=90;
+const HARD_TIME=90;
 
-function shuffle(arr) {
-  return [...arr].sort(() => Math.random() - 0.5);
+// ── SOUND ────────────────────────────────────────────────
+const AudioCtx=window.AudioContext||window.webkitAudioContext;
+let ctx;
+function getCtx(){ if(!ctx) ctx=new AudioCtx(); return ctx; }
+
+function playFlip(){
+  try{
+    const ac=getCtx(),o=ac.createOscillator(),g=ac.createGain();
+    o.connect(g);g.connect(ac.destination);o.type='sine';
+    o.frequency.setValueAtTime(880,ac.currentTime);
+    o.frequency.exponentialRampToValueAtTime(1200,ac.currentTime+0.12);
+    g.gain.setValueAtTime(0.18,ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.18);
+    o.start(ac.currentTime);o.stop(ac.currentTime+0.18);
+  }catch(e){}
 }
 
-function initGame() {
+function playMatch(){
+  try{
+    const ac=getCtx();
+    [523.25,659.25,783.99,1046.5].forEach((f,i)=>{
+      const o=ac.createOscillator(),g=ac.createGain();
+      o.connect(g);g.connect(ac.destination);o.type='triangle';o.frequency.value=f;
+      const t=ac.currentTime+i*0.08;
+      g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.22,t+0.02);
+      g.gain.exponentialRampToValueAtTime(0.001,t+0.25);
+      o.start(t);o.stop(t+0.26);
+    });
+  }catch(e){}
+}
+
+function playVictory(){
+  try{
+    const ac=getCtx();
+    [523,659,784,1047,784,1047,1319].forEach((f,i)=>{
+      const o=ac.createOscillator(),g=ac.createGain();
+      o.connect(g);g.connect(ac.destination);o.type='sine';o.frequency.value=f;
+      const t=ac.currentTime+i*0.13;
+      g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.2,t+0.03);
+      g.gain.exponentialRampToValueAtTime(0.001,t+0.35);
+      o.start(t);o.stop(t+0.36);
+    });
+  }catch(e){}
+}
+
+// ── INIT ─────────────────────────────────────────────────
+function setMode(mode){
+  gameMode=mode;
+  document.getElementById('btnNormal').classList.toggle('active', mode==='normal');
+  document.getElementById('btnHard').classList.toggle('active', mode==='hard');
+  document.getElementById('timerBarWrap').classList.toggle('show', mode==='hard');
+  document.getElementById('scoreDisplay').className='score-pill'+(mode==='hard'?' hard':'');
+  initGame();
+}
+
+function shuffle(arr){ return [...arr].sort(()=>Math.random()-0.5); }
+
+function initGame(){
   clearInterval(timerInterval);
-  flipped = []; matched = []; moves = 0; seconds = 0; locked = false;
-  document.getElementById('moves').textContent = 0;
-  document.getElementById('pairs').textContent = 0;
-  document.getElementById('timer').textContent = '0s';
+  clearInterval(hardTimerInterval);
+  flipped=[]; matched=[]; moves=0; seconds=0;
+  locked=false; score=0; combo=0; timerStarted=false;
+  hardTimeLeft=HARD_TIME;
+
+  document.getElementById('moves').textContent=0;
+  document.getElementById('pairs').textContent=0;
+  document.getElementById('timer').textContent='0s';
+  document.getElementById('scoreDisplay').textContent='⭐ 0 pts';
+  document.getElementById('comboDisplay').style.display='none';
   document.getElementById('overlay').classList.remove('show');
+  updateTimerBar();
 
-  const pairs = shuffle(CARDS).slice(0, 10);
-  cards = shuffle([...pairs, ...pairs].map((c, i) => ({ ...c, id: i })));
+  const isHard=gameMode==='hard';
+  const totalPairs=isHard?20:10;
+  document.getElementById('totalPairs').textContent=totalPairs;
 
+  const pool=isHard ? shuffle([...CARDS_NORMAL,...CARDS_EXTRA]) : CARDS_NORMAL;
+  cards=shuffle([...pool,...pool].map((c,i)=>({...c,id:i})));
   renderBoard();
-
-  timerInterval = setInterval(() => {
-    seconds++;
-    document.getElementById('timer').textContent = seconds + 's';
-  }, 1000);
 }
 
-function renderBoard() {
-  const board = document.getElementById('board');
-  board.innerHTML = '';
-  cards.forEach((card, index) => {
-    const el = document.createElement('div');
-    el.className = 'card';
-    el.dataset.index = index;
-    el.innerHTML = `
-      <div class="card-inner">
-        <div class="card-face card-back"></div>
-        <div class="card-face card-front">
-          <div class="emoji">${card.emoji}</div>
-          <div class="label">${card.label}</div>
-        </div>
-      </div>`;
-    el.addEventListener('click', () => onCardClick(el, index));
+function startTimer(){
+  if(timerStarted) return;
+  timerStarted=true;
+
+  timerInterval=setInterval(()=>{
+    seconds++;
+    document.getElementById('timer').textContent=seconds+'s';
+  },1000);
+
+  if(gameMode==='hard'){
+    hardTimerInterval=setInterval(()=>{
+      hardTimeLeft--;
+      updateTimerBar();
+      if(hardTimeLeft<=0){
+        clearInterval(hardTimerInterval);
+        clearInterval(timerInterval);
+        gameOver();
+      }
+    },1000);
+  }
+}
+
+function updateTimerBar(){
+  const pct=(hardTimeLeft/HARD_TIME)*100;
+  document.getElementById('timerFill').style.width=pct+'%';
+  document.getElementById('timerLabel').textContent=hardTimeLeft+'s';
+  document.getElementById('timerFill').style.background=
+    hardTimeLeft<20?'linear-gradient(90deg,#dc2626,#f97316)':
+    hardTimeLeft<40?'linear-gradient(90deg,#d97706,#f59e0b)':
+    'linear-gradient(90deg,#7c3aed,#db2777)';
+}
+
+function gameOver(){
+  showToast('⏰ Tempo esgotado! Tente de novo!',true);
+  setTimeout(()=>{ if(confirm('Tempo esgotado! 😢 Tentar novamente?')) initGame(); },500);
+}
+
+// ── BOARD ────────────────────────────────────────────────
+function renderBoard(){
+  const board=document.getElementById('board');
+  board.innerHTML='';
+  board.className='board'+(gameMode==='hard'?' hard':'');
+  cards.forEach((card,index)=>{
+    const el=document.createElement('div');
+    el.className='card'; el.dataset.index=index;
+    el.innerHTML=`<div class="card-inner">
+      <div class="card-face card-back${gameMode==='hard'?' hard-back':''}"></div>
+      <div class="card-face card-front">
+        <div class="emoji">${card.emoji}</div>
+        <div class="label">${card.label}</div>
+      </div>
+    </div>`;
+    el.addEventListener('click',()=>onCardClick(el,index));
     board.appendChild(el);
   });
 }
 
-function onCardClick(el, index) {
-  if (locked) return;
-  if (el.classList.contains('flipped') || el.classList.contains('matched')) return;
-  if (flipped.length === 2) return;
+// ── GAME LOGIC ───────────────────────────────────────────
+function onCardClick(el,index){
+  if(locked||el.classList.contains('flipped')||el.classList.contains('matched')) return;
+  if(flipped.length===2) return;
+  try{ getCtx().resume(); }catch(e){}
 
-  // Wake up AudioContext on first user gesture
-  try { getCtx().resume(); } catch(e) {}
+  // Timer começa na primeira carta clicada
+  startTimer();
 
-  playFlipSound();
+  playFlip();
   el.classList.add('flipped');
-  flipped.push({ el, index });
-
-  if (flipped.length === 2) {
+  flipped.push({el,index});
+  if(flipped.length===2){
     moves++;
-    document.getElementById('moves').textContent = moves;
-    locked = true;
+    document.getElementById('moves').textContent=moves;
+    locked=true;
     checkMatch();
   }
 }
 
-function checkMatch() {
-  const [a, b] = flipped;
-  const cardA = cards[a.index];
-  const cardB = cards[b.index];
-
-  if (cardA.emoji === cardB.emoji) {
-    // Match!
-    setTimeout(() => {
-      playMatchSound();
+function checkMatch(){
+  const [a,b]=flipped;
+  if(cards[a.index].emoji===cards[b.index].emoji){
+    setTimeout(()=>{
+      playMatch();
       a.el.classList.add('matched');
       b.el.classList.add('matched');
-      spawnHeartBurst(a.el);
-      matched.push(a.index, b.index);
-      document.getElementById('pairs').textContent = matched.length / 2;
-      flipped = [];
-      locked = false;
+      spawnBurst(a.el);
+      matched.push(a.index,b.index);
+      combo++;
 
-      if (matched.length === cards.length) {
-        setTimeout(showVictory, 600);
+      const base=gameMode==='hard'?150:100;
+      const speedBonus=Math.max(0,30-seconds)*(gameMode==='hard'?3:2);
+      const comboBonus=(combo-1)*20;
+      score+=base+speedBonus+comboBonus;
+
+      document.getElementById('pairs').textContent=matched.length/2;
+      document.getElementById('scoreDisplay').textContent=`⭐ ${score} pts`;
+
+      if(combo>1){
+        document.getElementById('comboDisplay').style.display='flex';
+        document.getElementById('comboNum').textContent=combo;
       }
-    }, 300);
+
+      flipped=[]; locked=false;
+      if(matched.length===cards.length) setTimeout(showVictory,600);
+    },300);
   } else {
-    // No match
-    setTimeout(() => {
+    combo=0;
+    document.getElementById('comboDisplay').style.display='none';
+    score=Math.max(0,score-10);
+    document.getElementById('scoreDisplay').textContent=`⭐ ${score} pts`;
+    setTimeout(()=>{
       a.el.classList.remove('flipped');
       b.el.classList.remove('flipped');
-      flipped = [];
-      locked = false;
-    }, 1000);
+      flipped=[]; locked=false;
+    },1000);
   }
 }
 
-function spawnHeartBurst(el) {
-  const rect = el.getBoundingClientRect();
-  const cx = rect.left + rect.width / 2;
-  const cy = rect.top + rect.height / 2;
-  const emojis = ['💖','💕','✨','🌸','⭐','💫'];
-  for (let i = 0; i < 8; i++) {
-    const b = document.createElement('div');
-    b.className = 'burst';
-    b.textContent = emojis[Math.floor(Math.random() * emojis.length)];
-    const angle = (Math.PI * 2 * i) / 8 + Math.random() * 0.5;
-    const dist = 60 + Math.random() * 50;
-    b.style.setProperty('--dx', Math.cos(angle) * dist + 'px');
-    b.style.setProperty('--dy', Math.sin(angle) * dist + 'px');
-    b.style.left = cx + 'px';
-    b.style.top = cy + 'px';
-    document.body.appendChild(b);
-    setTimeout(() => b.remove(), 1000);
-  }
-}
-
-function showVictory() {
+// ── VICTORY ──────────────────────────────────────────────
+function showVictory(){
   clearInterval(timerInterval);
-  playVictorySound();
-  document.getElementById('finalMoves').textContent = moves;
-  document.getElementById('finalTime').textContent = seconds + 's';
+  clearInterval(hardTimerInterval);
+  playVictory();
+
+  const timeBonus=gameMode==='hard'?hardTimeLeft*5:0;
+  const finalScore=score+timeBonus;
+
+  document.getElementById('finalScore').textContent=finalScore;
+  document.getElementById('finalMoves').textContent=moves;
+  document.getElementById('finalTime').textContent=seconds+'s';
+  document.getElementById('finalMode').textContent=gameMode==='hard'?'💀 Difícil':'🌸 Normal';
   document.getElementById('overlay').classList.add('show');
+
+  const music=document.getElementById('victoryMusic');
+  if(music){ music.volume=0.7; music.currentTime=0; music.play().catch(()=>{}); }
   spawnConfetti();
-  // Play victory music
-  const music = document.getElementById('victoryMusic');
-  if (music) {
-    music.volume = 0.7;
-    music.currentTime = 0;
-    music.play().catch(() => {});
+
+  const savedEl=document.getElementById('scoreSaved');
+  if(window._currentUser){
+    window.saveScore(finalScore,gameMode)
+      .then(()=>{ savedEl.textContent='✅ Pontuação salva no placar!'; })
+      .catch(()=>{ savedEl.textContent=''; });
+  } else {
+    savedEl.textContent='💡 Faça login para salvar sua pontuação!';
   }
 }
 
-function closeOverlay() {
-  const music = document.getElementById('victoryMusic');
-  if (music) { music.pause(); music.currentTime = 0; }
+function closeOverlay(){
+  const music=document.getElementById('victoryMusic');
+  if(music){ music.pause(); music.currentTime=0; }
   document.getElementById('overlay').classList.remove('show');
   initGame();
 }
 
-function spawnConfetti() {
-  const colors = ['#f48fb1','#ce93d8','#80deea','#ffd54f','#ff8a65','#a5d6a7','#ffffff'];
-  for (let i = 0; i < 80; i++) {
-    const c = document.createElement('div');
-    c.className = 'confetti-piece';
-    c.style.background = colors[Math.floor(Math.random() * colors.length)];
-    c.style.left = Math.random() * 100 + 'vw';
-    c.style.top = '-20px';
-    c.style.animationDuration = (2 + Math.random() * 3) + 's';
-    c.style.animationDelay = (Math.random() * 1.5) + 's';
-    c.style.borderRadius = Math.random() > 0.5 ? '50%' : '2px';
-    c.style.width = c.style.height = (6 + Math.random() * 8) + 'px';
+// ── EFFECTS ──────────────────────────────────────────────
+function spawnBurst(el){
+  const rect=el.getBoundingClientRect();
+  const cx=rect.left+rect.width/2, cy=rect.top+rect.height/2;
+  const em=['💖','💕','✨','🌸','⭐','💫'];
+  for(let i=0;i<8;i++){
+    const b=document.createElement('div'); b.className='burst';
+    b.textContent=em[Math.floor(Math.random()*em.length)];
+    const angle=(Math.PI*2*i)/8+Math.random()*0.5;
+    const dist=60+Math.random()*50;
+    b.style.setProperty('--dx',Math.cos(angle)*dist+'px');
+    b.style.setProperty('--dy',Math.sin(angle)*dist+'px');
+    b.style.left=cx+'px'; b.style.top=cy+'px';
+    document.body.appendChild(b);
+    setTimeout(()=>b.remove(),1000);
+  }
+}
+
+function spawnConfetti(){
+  const colors=['#f48fb1','#ce93d8','#80deea','#ffd54f','#ff8a65','#a5d6a7','#ffffff'];
+  for(let i=0;i<80;i++){
+    const c=document.createElement('div'); c.className='confetti-piece';
+    c.style.background=colors[Math.floor(Math.random()*colors.length)];
+    c.style.left=Math.random()*100+'vw'; c.style.top='-20px';
+    c.style.animationDuration=(2+Math.random()*3)+'s';
+    c.style.animationDelay=(Math.random()*1.5)+'s';
+    c.style.borderRadius=Math.random()>0.5?'50%':'2px';
+    c.style.width=c.style.height=(6+Math.random()*8)+'px';
     document.body.appendChild(c);
-    setTimeout(() => c.remove(), 5000);
+    setTimeout(()=>c.remove(),5000);
   }
 }
 
-// ===================== FLOATING DECORS =====================
-function spawnFloatingDecors() {
-  const decors = document.getElementById('floatingDecors');
-  const emojis = ['🌸','💕','⭐','✨','🌷','💖','🍓','🎀'];
-  for (let i = 0; i < 12; i++) {
-    const d = document.createElement('div');
-    d.className = 'floating-decor';
-    d.textContent = emojis[Math.floor(Math.random() * emojis.length)];
-    d.style.left = Math.random() * 100 + 'vw';
-    d.style.animationDuration = (10 + Math.random() * 15) + 's';
-    d.style.animationDelay = (Math.random() * 15) + 's';
-    decors.appendChild(d);
+// ── LEADERBOARD ──────────────────────────────────────────
+window.renderLeaderboard=function(players){
+  const el=document.getElementById('lbContent');
+  if(!el) return;
+  if(!players||!players.length){
+    el.innerHTML='<p class="no-login-msg">Nenhuma pontuação ainda 🌸</p>'; return;
+  }
+  const medals=['🥇','🥈','🥉'];
+  players.sort((a,b)=>(b.bestNormal||0)-(a.bestNormal||0));
+  el.innerHTML=`<table class="lb-table"><tbody>${
+    players.map((p,i)=>`
+      <tr>
+        <td style="text-align:center;font-size:1.1rem">${medals[i]||'🌸'}</td>
+        <td style="font-weight:800;color:var(--text)">${p.name}</td>
+        <td style="text-align:right">
+          <span style="background:var(--pink-light);color:var(--pink-deep);padding:0.2rem 0.7rem;border-radius:999px;font-weight:800;font-size:0.85rem">${p.bestNormal||0} pts</span>
+        </td>
+      </tr>
+      ${p.bestHard?`<tr><td></td><td style="font-size:0.75rem;color:var(--lilac)">💀 Difícil</td><td style="text-align:right;font-size:0.75rem;color:var(--lilac)">${p.bestHard} pts</td></tr>`:''}
+    `).join('')
+  }</tbody></table>`;
+};
+
+// ── TABS ─────────────────────────────────────────────────
+function showTab(tab){
+  document.getElementById('viewGame').style.display=tab==='game'?'block':'none';
+  document.getElementById('viewLeaderboard').style.display=tab==='leaderboard'?'block':'none';
+  document.getElementById('tabGame').classList.toggle('active',tab==='game');
+  document.getElementById('tabLb').classList.toggle('active',tab==='leaderboard');
+  if(tab==='leaderboard'){
+    if(!window._currentUser){
+      document.getElementById('lbContent').innerHTML='<p class="no-login-msg">Faça login para ver o placar! 🌸</p>';
+    } else {
+      window._loadLeaderboard&&window._loadLeaderboard();
+    }
   }
 }
 
-// ===================== START =====================
-spawnFloatingDecors();
+// ── AUTH MODAL ───────────────────────────────────────────
+function openAuthModal(tab){
+  document.getElementById('authModalBg').classList.add('show');
+  switchAuthTab(tab);
+}
+function closeAuthModal(){
+  document.getElementById('authModalBg').classList.remove('show');
+}
+function switchAuthTab(tab){
+  const isLogin=tab==='login';
+  document.getElementById('authTabLogin').classList.toggle('active',isLogin);
+  document.getElementById('authTabRegister').classList.toggle('active',!isLogin);
+  document.getElementById('authNameField').style.display=isLogin?'none':'block';
+  document.getElementById('authSubmitBtn').textContent=isLogin?'Entrar 🌸':'Criar conta 🌸';
+  document.getElementById('authSubmitBtn').onclick=()=>doEmailAuth(tab);
+}
+document.getElementById('authModalBg').addEventListener('click',e=>{
+  if(e.target===document.getElementById('authModalBg')) closeAuthModal();
+});
+
+// ── TOAST ────────────────────────────────────────────────
+function showToast(msg,err=false){
+  const t=document.createElement('div');
+  t.className='toast'+(err?' err':''); t.textContent=msg;
+  document.body.appendChild(t);
+  setTimeout(()=>{
+    t.style.transition='opacity .4s,transform .4s';
+    t.style.opacity='0';
+    setTimeout(()=>t.remove(),400);
+  },2500);
+}
+window.showToast=showToast;
+
+// ── FLOATING DECORS ──────────────────────────────────────
+function spawnDecors(){
+  const wrap=document.getElementById('floatingDecors');
+  const em=['🌸','💕','⭐','✨','🌷','💖','🍓','🎀'];
+  for(let i=0;i<12;i++){
+    const d=document.createElement('div'); d.className='floating-decor';
+    d.textContent=em[Math.floor(Math.random()*em.length)];
+    d.style.left=Math.random()*100+'vw';
+    d.style.animationDuration=(10+Math.random()*15)+'s';
+    d.style.animationDelay=(Math.random()*15)+'s';
+    wrap.appendChild(d);
+  }
+}
+
+spawnDecors();
 initGame();
 </script>
 </body>
