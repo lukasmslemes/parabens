@@ -1,0 +1,24 @@
+{
+  "name": "🌸 Jogo da Memória 🌸",
+  "short_name": "Memória",
+  "description": "Um jogo da memória especial feito com carinho 💕",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#fff9f0",
+  "theme_color": "#f48fb1",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
