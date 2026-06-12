@@ -9,7 +9,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged, updateProfile } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import { getFirestore, doc, setDoc, getDoc, collection, getDocs, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getFirestore, doc, setDoc, getDoc, collection, getDocs, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, Timestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyATJAen6Qtzm-uOqHtD6ubQUDmVdqG1BUM",
@@ -34,6 +34,7 @@ onAuthStateChanged(auth, user => {
     window._loadPersonalRecords && window._loadPersonalRecords();
     window._loadHistory && window._loadHistory();
     window._loadAllUsers && window._loadAllUsers();
+    window._loadDailyLeaderboard && window._loadDailyLeaderboard();
     startNotifListener(user.uid);
     // Set online presence
     setOnlinePresence(user.uid, true);
@@ -165,6 +166,43 @@ window.saveScore = async function(score, mode, time, movesCount) {
   window._loadLeaderboard && window._loadLeaderboard();
   window._loadPersonalRecords && window._loadPersonalRecords();
   window._loadHistory && window._loadHistory();
+};
+
+// ── DAILY CHALLENGE ───────────────────────────────────
+window.saveDailyScore = async function(score, time, moves) {
+  const user = window._currentUser; if (!user) return;
+  const today = getDailyKey();
+  const docId = today + '_' + user.uid;
+  const ref = doc(db, 'daily_scores', docId);
+  const existing = await getDoc(ref);
+  if (existing.exists()) { showToast('Você já jogou o desafio de hoje! 🌸'); return false; }
+  const av = localStorage.getItem('selectedAvatar') || '🌸';
+  await setDoc(ref, {
+    uid: user.uid, name: user.displayName || user.email.split('@')[0],
+    avatar: av, photoURL: user.photoURL || null,
+    score, time, moves, date: today, createdAt: serverTimestamp()
+  });
+  showToast('🏆 Pontuação do Desafio salva!');
+  window._loadDailyLeaderboard && window._loadDailyLeaderboard();
+  return true;
+};
+
+window.checkDailySubmitted = async function() {
+  const user = window._currentUser; if (!user) return false;
+  const today = getDailyKey();
+  const ref = doc(db, 'daily_scores', today + '_' + user.uid);
+  const snap = await getDoc(ref);
+  return snap.exists();
+};
+
+window._loadDailyLeaderboard = async function() {
+  try {
+    const today = getDailyKey();
+    const q = query(collection(db, 'daily_scores'), where('date', '==', today), orderBy('time', 'asc'), limit(20));
+    const snap = await getDocs(q);
+    const players = []; snap.forEach(d => players.push({ id: d.id, ...d.data() }));
+    window.renderDailyLeaderboard && window.renderDailyLeaderboard(players);
+  } catch(e) { console.log('daily_lb', e); }
 };
 
 window._loadLeaderboard = async function() {
@@ -637,6 +675,21 @@ audio{display:none}
 .cat-surprise{position:fixed;pointer-events:none;z-index:500;font-size:5rem;animation:catAppear 2.2s ease forwards}
 @keyframes catAppear{0%{opacity:0;transform:scale(0.3)}15%{opacity:1;transform:scale(1.2)}30%{transform:scale(1)}80%{opacity:1}100%{opacity:0;transform:scale(0.8) translateY(-30px)}}
 
+/* DAILY CHALLENGE */
+.daily-header{text-align:center;margin-bottom:1rem}
+.daily-badge{display:inline-flex;align-items:center;gap:0.4rem;background:linear-gradient(135deg,var(--pink-deep),var(--lilac));color:white;border-radius:999px;padding:0.4rem 1.1rem;font-size:0.82rem;font-weight:800;margin-bottom:0.6rem}
+.daily-date{font-size:0.78rem;color:var(--text2);font-weight:700}
+.daily-countdown{display:flex;align-items:center;justify-content:center;gap:0.4rem;background:var(--surface2);border:2px solid var(--border);border-radius:14px;padding:0.6rem 1rem;margin:0.7rem auto;max-width:280px;font-size:0.85rem;font-weight:800;color:var(--text)}
+.daily-countdown .cd-time{color:var(--pink-deep);font-family:'Pacifico',cursive;font-size:1.1rem}
+.daily-play-btn{display:block;width:100%;max-width:280px;margin:0.8rem auto;padding:0.75rem;background:linear-gradient(135deg,var(--pink-deep),var(--lilac));color:white;border:none;border-radius:14px;font-family:'Nunito',sans-serif;font-size:1rem;font-weight:800;cursor:pointer;box-shadow:0 4px 16px rgba(233,30,140,0.35);transition:all 0.2s}
+.daily-play-btn:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(233,30,140,0.45)}
+.daily-play-btn:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+.daily-submitted{background:linear-gradient(135deg,rgba(34,197,94,0.12),rgba(74,222,128,0.08));border:2px solid #86efac;border-radius:14px;padding:0.8rem;text-align:center;margin:0.7rem 0;font-size:0.88rem;font-weight:700;color:#16a34a}
+[data-theme="dark"] .daily-submitted{color:#4ade80;border-color:#166534}
+.daily-rules{background:var(--surface2);border:2px solid var(--border);border-radius:14px;padding:0.8rem;margin:0.7rem 0;font-size:0.8rem;color:var(--text2);line-height:1.6}
+.daily-rules strong{color:var(--pink-deep)}
+.daily-lb-title{font-size:0.78rem;font-weight:800;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;text-align:center;margin:0.8rem 0 0.5rem}
+
 /* ACHIEVEMENTS */
 .ach-grid{display:grid;grid-template-columns:1fr 1fr;gap:0.8rem}
 .ach-card{background:var(--surface2);border:2px solid var(--border);border-radius:16px;padding:0.9rem 0.8rem;text-align:center;transition:transform 0.2s,border-color 0.2s;position:relative;overflow:hidden}
@@ -722,6 +775,7 @@ audio{display:none}
   </div>
   <div class="tabs">
     <button class="tab active" onclick="openTab('game')" id="tabGame">🎮 Jogo</button>
+    <button class="tab" onclick="openTab('daily')" id="tabDaily">📅 Desafio</button>
     <button class="tab" onclick="openTab('leaderboard')" id="tabLb">🏆 Placar</button>
     <button class="tab" onclick="openTab('records')" id="tabRec">⭐ Recordes</button>
     <button class="tab" onclick="openTab('history')" id="tabHist">📜 Histórico</button>
@@ -733,6 +787,16 @@ audio{display:none}
 
 <main>
   <div id="viewGame"><div class="board" id="board"></div></div>
+
+  <!-- DAILY CHALLENGE VIEW -->
+  <div id="viewDaily" style="display:none;margin-top:1rem">
+    <div class="panel">
+      <h3>📅 Desafio Diário</h3>
+      <div id="dailyChallengeContent">
+        <p class="no-login-msg">Carregando... 🌸</p>
+      </div>
+    </div>
+  </div>
 
   <div id="viewLeaderboard" style="display:none;margin-top:1rem">
     <div class="panel">
@@ -1253,6 +1317,192 @@ function renderAchievements(){
   `;
 }
 
+// ── DAILY CHALLENGE ───────────────────────────────────
+// Generates a seed string for today (UTC date)
+function getDailyKey() {
+  const d = new Date();
+  const y = d.getUTCFullYear(), mo = String(d.getUTCMonth()+1).padStart(2,'0'), day = String(d.getUTCDate()).padStart(2,'0');
+  return `${y}-${mo}-${day}`;
+}
+
+// Simple seeded PRNG (mulberry32)
+function seededRng(seed) {
+  let s = seed;
+  return function() {
+    s |= 0; s = s + 0x6D2B79F5 | 0;
+    let t = Math.imul(s ^ s >>> 15, 1 | s);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+// Hash a string to a number
+function hashStr(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) { h = (Math.imul(31, h) + str.charCodeAt(i)) | 0; }
+  return Math.abs(h);
+}
+
+// Seeded shuffle
+function seededShuffle(arr, rng) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// Build today's daily board (always Normal: 10 pairs)
+function getDailyBoard() {
+  const key = getDailyKey();
+  const seed = hashStr(key);
+  const rng = seededRng(seed);
+  const pool = seededShuffle([...CARDS_NORMAL], rng).slice(0, 10);
+  return seededShuffle([...pool, ...pool].map((c, i) => ({...c, id: i})), rng);
+}
+
+// Countdown to next midnight UTC
+function getMsUntilMidnightUTC() {
+  const now = new Date();
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+  return next - now;
+}
+function formatCountdown(ms) {
+  const total = Math.floor(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${String(h).padStart(2,'0')}h ${String(m).padStart(2,'0')}m ${String(s).padStart(2,'0')}s`;
+}
+
+let _dailyCountdownTimer = null;
+
+async function renderDailyChallenge() {
+  const el = document.getElementById('dailyChallengeContent'); if (!el) return;
+  const user = window._currentUser;
+  const today = getDailyKey();
+  const [d, m, y] = today.split('-').reverse(); // dd/mm/yyyy
+  const dateStr = `${d}/${m}/${y}`;
+
+  // Check submission
+  let submitted = false;
+  let myResult = null;
+  if (user) {
+    try {
+      submitted = await window.checkDailySubmitted();
+    } catch(e) {}
+  }
+
+  const submittedBlock = submitted
+    ? `<div class="daily-submitted">✅ Você já participou do desafio de hoje!<br>Veja seu resultado no placar abaixo 👇</div>`
+    : '';
+
+  const loginBlock = !user
+    ? `<p class="no-login-msg">Faça login para participar do Desafio Diário! 🌸</p>`
+    : '';
+
+  const playLabel = submitted ? '✅ Já jogou hoje!' : '📅 Jogar Desafio de Hoje';
+
+  el.innerHTML = `
+    <div class="daily-header">
+      <div><span class="daily-badge">📅 Desafio Diário</span></div>
+      <div class="daily-date">🗓️ ${dateStr} · Mesmo tabuleiro para todos!</div>
+    </div>
+    <div class="daily-countdown">⏳ Próximo desafio em <span class="cd-time" id="dailyCdTime">--:--:--</span></div>
+    ${submittedBlock}
+    ${loginBlock}
+    <button class="daily-play-btn" id="dailyPlayBtn" onclick="startDailyChallenge()" ${(!user || submitted) ? 'disabled' : ''}>
+      ${playLabel}
+    </button>
+    <div class="daily-rules">
+      <strong>📋 Regras do Desafio Diário:</strong><br>
+      • Mesmo tabuleiro para todos os jogadores<br>
+      • Apenas <strong>1 tentativa por dia</strong> — jogue bem!<br>
+      • Placar separado, reiniciado a meia-noite (UTC)<br>
+      • Modo Normal — 10 pares<br>
+      • Classificação por tempo (menos tempo = melhor)
+    </div>
+    <div class="daily-lb-title">🏆 Placar de hoje</div>
+    <div id="dailyLbContent"><p class="no-login-msg">Carregando placar... 🌸</p></div>
+  `;
+
+  // Start countdown timer
+  if (_dailyCountdownTimer) clearInterval(_dailyCountdownTimer);
+  function updateCd() {
+    const cdEl = document.getElementById('dailyCdTime');
+    if (!cdEl) { clearInterval(_dailyCountdownTimer); return; }
+    cdEl.textContent = formatCountdown(getMsUntilMidnightUTC());
+  }
+  updateCd();
+  _dailyCountdownTimer = setInterval(updateCd, 1000);
+
+  // Load leaderboard
+  window._loadDailyLeaderboard && window._loadDailyLeaderboard();
+}
+
+window.renderDailyLeaderboard = function(players) {
+  const el = document.getElementById('dailyLbContent'); if (!el) return;
+  if (!players || !players.length) {
+    el.innerHTML = '<p class="no-login-msg">Nenhuma pontuação ainda hoje 🌸<br><span style="font-size:0.76rem">Seja a primeira!</span></p>';
+    return;
+  }
+  const medals = ['🥇','🥈','🥉'];
+  el.innerHTML = `<table class="lb-table"><tbody>${players.map((p, i) => {
+    const avEl = p.photoURL
+      ? `<div class="lb-avatar" style="background-image:url(${p.photoURL});background-size:cover"></div>`
+      : `<div class="lb-avatar">${p.avatar||'🌸'}</div>`;
+    const isMe = window._currentUser && window._currentUser.uid === p.uid;
+    return `<tr style="${isMe ? 'background:var(--pink-light);' : ''}">
+      <td style="text-align:center;font-size:1rem">${medals[i] || (i+1+'º')}</td>
+      <td>${avEl}</td>
+      <td style="font-weight:800;color:var(--text)">${p.name}${isMe ? ' <span style="font-size:0.7rem;color:var(--pink-deep)">(você)</span>' : ''}</td>
+      <td style="text-align:right">
+        <span class="time-badge">⏱️ ${p.time}s</span><br>
+        <span style="font-size:0.7rem;color:var(--text2)">${p.score} pts · ${p.moves} tent.</span>
+      </td>
+    </tr>`;
+  }).join('')}</tbody></table>`;
+};
+
+// Daily game state
+let _isDailyMode = false;
+let _dailyStarted = false;
+
+function startDailyChallenge() {
+  if (!window._currentUser) { showToast('Faça login para jogar! 🌸', true); return; }
+  _isDailyMode = true;
+  _dailyStarted = false;
+  // Switch to game tab and start daily board
+  openTab('game');
+  initDailyGame();
+  showToast('📅 Desafio Diário iniciado! Boa sorte! 🍀');
+}
+
+function initDailyGame() {
+  clearInterval(timerInterval); clearInterval(hardTimerInterval); stopBgMusic();
+  flipped=[]; matched=[]; moves=0; seconds=0; locked=false; score=0; combo=0; timerStarted=false; hardTimeLeft=HARD_TIME; maxCombo=0; catsMatched=false;
+  document.getElementById('moves').textContent=0;
+  document.getElementById('pairs').textContent=0;
+  document.getElementById('timer').textContent='0s';
+  document.getElementById('scoreDisplay').textContent='⭐ 0 pts';
+  document.getElementById('comboDisplay').style.display='none';
+  document.getElementById('overlay').classList.remove('show');
+  updateTimerBar();
+  // Force normal mode display
+  document.getElementById('btnNormal').classList.add('active');
+  document.getElementById('btnHard').classList.remove('active');
+  document.getElementById('timerBarWrap').classList.remove('show');
+  document.getElementById('scoreDisplay').className='score-pill';
+  document.getElementById('totalPairs').textContent=10;
+  // Use seeded daily board
+  cards = getDailyBoard();
+  gameMode = 'daily';
+  renderBoard();
+  // Show daily indicator
+  showToast('📅 Tabuleiro do Desafio — mesmo para todos!');
+}
+
 // EFFECTS
 function spawnBurst(el){
   const r=el.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;
@@ -1488,8 +1738,8 @@ function handlePhotoUpload(event) {
 }
 
 // ── TABS ──────────────────────────────────────────────
-const TAB_VIEWS={game:'viewGame',leaderboard:'viewLeaderboard',records:'viewRecords',history:'viewHistory',achievements:'viewAchievements',profile:'viewProfile',gifts:'viewGifts'};
-const TAB_BTNS={game:'tabGame',leaderboard:'tabLb',records:'tabRec',history:'tabHist',achievements:'tabAch',profile:'tabProfile',gifts:'tabGifts'};
+const TAB_VIEWS={game:'viewGame',daily:'viewDaily',leaderboard:'viewLeaderboard',records:'viewRecords',history:'viewHistory',achievements:'viewAchievements',profile:'viewProfile',gifts:'viewGifts'};
+const TAB_BTNS={game:'tabGame',daily:'tabDaily',leaderboard:'tabLb',records:'tabRec',history:'tabHist',achievements:'tabAch',profile:'tabProfile',gifts:'tabGifts'};
 
 function openTab(tab) {
   Object.keys(TAB_VIEWS).forEach(k => {
@@ -1506,6 +1756,7 @@ function openTab(tab) {
   if (tab==='history')     window._loadHistory && window._loadHistory();
   if (tab==='achievements') renderAchievements();
   if (tab==='profile')     renderProfile();
+  if (tab==='daily')       renderDailyChallenge();
   if (tab==='gifts') {
     window._loadAllUsers && window._loadAllUsers();
     window._loadGifts && window._loadGifts();
