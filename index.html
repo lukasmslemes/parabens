@@ -10,6 +10,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged, updateProfile } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import { getFirestore, doc, setDoc, getDoc, collection, getDocs, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getMessaging, getToken, onMessage } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyATJAen6Qtzm-uOqHtD6ubQUDmVdqG1BUM",
@@ -23,6 +24,8 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const googleProvider = new GoogleAuthProvider();
+let messaging = null;
+try { messaging = getMessaging(app); } catch(e) { console.warn('FCM não suportado neste browser', e); }
 
 let unsubNotif = null;
 
@@ -35,6 +38,8 @@ onAuthStateChanged(auth, user => {
     window._loadHistory && window._loadHistory();
     window._loadAllUsers && window._loadAllUsers();
     startNotifListener(user.uid);
+    // Inicializar FCM push (só se PWA instalado ou permissão já concedida)
+    if (Notification && Notification.permission === 'granted') { initFCM(user.uid); }
     // Set online presence
     setOnlinePresence(user.uid, true);
     // Duel challenge listener
@@ -317,6 +322,52 @@ function startNotifListener(uid) {
   const unsubM = onSnapshot(qM, snap => { unreadMsgs = snap.size; updateBadge(); });
   unsubNotif = () => { unsubG(); unsubM(); };
 }
+// ── FIREBASE CLOUD MESSAGING (Push Notifications) ─────
+// VAPID key: gere no Firebase Console → Configurações do Projeto
+// → Cloud Messaging → Certificados Web Push → Gerar par de chaves
+const FCM_VAPID_KEY = 'SUA_VAPID_KEY_AQUI'; // ⚠️ substitua pela sua VAPID key
+
+async function initFCM(uid) {
+  if (!messaging) return;
+  if (!('Notification' in window)) return;
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    const swReg = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') return;
+    const token = await getToken(messaging, {
+      vapidKey: FCM_VAPID_KEY,
+      serviceWorkerRegistration: swReg
+    });
+    if (!token) return;
+    await setDoc(doc(db, 'fcm_tokens', uid), {
+      token, uid, updatedAt: serverTimestamp()
+    }, { merge: true });
+    onMessage(messaging, payload => {
+      const n = payload.notification || {};
+      const title = n.title || '🌸 Jogo da Memória';
+      const body  = n.body  || 'Nova notificação!';
+      window.showToast && window.showToast(`${title}: ${body}`);
+      if (document.visibilityState !== 'visible') {
+        new Notification(title, { body, icon: '/icon-192.png' });
+      }
+    });
+    console.log('✅ FCM ativo. Token salvo no Firestore.');
+  } catch(e) { console.warn('FCM init error:', e); }
+}
+
+window.togglePushNotifications = async function() {
+  const user = window._currentUser;
+  if (!user) { window.showToast && window.showToast('Faça login para ativar notificações!', true); return; }
+  if (Notification.permission === 'denied') {
+    window.showToast && window.showToast('Notificações bloqueadas. Permita nas configurações do navegador.', true);
+    return;
+  }
+  await initFCM(user.uid);
+  window.showToast && window.showToast('🔔 Notificações push ativadas!');
+};
+
+
 
 // ── DUELS ─────────────────────────────────────────────
 window.sendDuelChallenge = async function(toUid, toName, bet) {
@@ -2250,6 +2301,17 @@ async function renderProfile() {
         ${hasPhoto ? `<button class="btn-photo danger" onclick="window.removeProfilePhoto()">🗑️ Remover foto</button>` : ''}
       </div>
       <p style="font-size:0.7rem;color:var(--text2);text-align:center">Foto salva de forma segura · máx 1MB</p>
+    </div>
+
+    <div class="profile-section" style="margin-top:1rem">
+      <div class="profile-section-title">— notificações push —</div>
+      <div style="text-align:center;margin-top:0.6rem">
+        ${('Notification' in window && Notification.permission === 'granted')
+          ? '<p style="color:var(--primary);font-size:0.85rem">🔔 Notificações push ativadas!</p>'
+          : '<button class="btn-submit" onclick="window.togglePushNotifications()" style="width:auto;padding:0.5rem 1.5rem">🔔 Ativar notificações push</button>'
+        }
+        <p style="font-size:0.7rem;color:var(--text2);margin-top:0.3rem">Receba avisos de duelos e presentes mesmo com o app fechado</p>
+      </div>
     </div>
 
     <div class="profile-section">
