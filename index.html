@@ -1642,8 +1642,8 @@ function _showFlashbang(){
     animation:flashbangPulse 0.4s ease-out;
   `;
   el.innerHTML=`
-    <div style="font-size:4rem;animation:flashbangBounce 0.5s infinite alternate">😹</div>
-    <div style="font-size:1rem;font-weight:800;color:#7c3aed;margin-top:0.5rem;text-shadow:0 2px 8px rgba(0,0,0,0.2)">FLASHBANG! 3s...</div>
+    <img src="flashbang.gif" style="width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block">
+    <div style="position:absolute;bottom:0.6rem;left:0;right:0;text-align:center;font-size:0.85rem;font-weight:800;color:#fff;text-shadow:0 2px 6px rgba(0,0,0,0.7)" id="_fbCountdown">3s</div>
   `;
   target.appendChild(el);
   _playFlashbangSound();
@@ -1652,8 +1652,8 @@ function _showFlashbang(){
   let t=3;
   const tick=setInterval(()=>{
     t--;
-    const label=el.querySelector('div:last-child');
-    if(label) label.textContent=t>0?`FLASHBANG! ${t}s...`:'';
+    const label=document.getElementById('_fbCountdown');
+    if(label) label.textContent=t>0?`${t}s`:'';
     if(t<=0){ clearInterval(tick); }
   },1000);
 
