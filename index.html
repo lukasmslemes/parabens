@@ -67,6 +67,7 @@ onAuthStateChanged(auth, user => {
   const ls = document.getElementById('loadingScreen');
   if (ls) { ls.classList.add('hide'); setTimeout(() => ls.remove(), 700); }
 
+
   // Corrige bug: openTab pode ter sido chamado antes do auth resolver.
   // Após o auth estar pronto, recarrega a aba ativa se ela depende de login.
   if (user) {
@@ -979,6 +980,14 @@ audio{display:none}
 <body>
 
 <!-- LOADING SCREEN -->
+<script>
+// Timeout de segurança: Chrome às vezes não dispara onAuthStateChanged rapidamente
+// Força esconder a loading screen após 6s mesmo sem resposta do Firebase
+setTimeout(function() {
+  var ls = document.getElementById('loadingScreen');
+  if (ls) { ls.classList.add('hide'); setTimeout(function(){ if(ls.parentNode) ls.remove(); }, 700); }
+}, 6000);
+</script>
 <div id="loadingScreen">
   <div class="loading-emoji">🌸</div>
   <div class="loading-title">Jogo da Memória</div>
@@ -1468,7 +1477,7 @@ const SHOP_ITEMS = [
 ];
 
 // Active powers for current game
-let activePowers = { freeze: false, guaranteed: false, xp2: false };
+let activePowers = { freeze: false, xp2: false };
 
 function renderShop(){
   const el=document.getElementById('shopContent'); if(!el) return;
@@ -1638,8 +1647,61 @@ function usePower(id){
       renderPowerHUD();
     },15000);
   } else if(id==='guaranteed'){
-    activePowers.guaranteed=true;
-    showToast('💣 Próximo par garantido!');
+    // Encontrar um par não descoberto e revelá-lo automaticamente com animação
+    const unmatched = cards
+      .map((c, i) => ({ ...c, i }))
+      .filter(c => !matched.includes(c.i));
+
+    // Agrupar por emoji para encontrar um par
+    const groups = {};
+    unmatched.forEach(c => {
+      if (!groups[c.emoji]) groups[c.emoji] = [];
+      groups[c.emoji].push(c.i);
+    });
+    const pair = Object.values(groups).find(g => g.length >= 2);
+    if (!pair) { showToast('💣 Nenhum par disponível!', true); addItem(id); return; }
+
+    const [idxA, idxB] = pair;
+    const cardEls = document.querySelectorAll('#board .card');
+    const elA = cardEls[idxA];
+    const elB = cardEls[idxB];
+    if (!elA || !elB) { addItem(id); return; }
+
+    showToast('💣 Par revelado automaticamente! ✨');
+    locked = true;
+
+    // Revelar carta A
+    elA.classList.add('flipped');
+    setTimeout(() => {
+      // Revelar carta B
+      elB.classList.add('flipped');
+      setTimeout(() => {
+        // Marcar como matched
+        elA.classList.add('matched');
+        elB.classList.add('matched');
+        spawnBurst(elA); spawnBurst(elB);
+        matched.push(idxA, idxB);
+        combo++;
+        if (combo > maxCombo) maxCombo = combo;
+        playComboSound(combo);
+        const base = gameMode === 'hard' ? 150 : 100;
+        const speedBonus = Math.max(0, 30 - seconds) * (gameMode === 'hard' ? 3 : 2);
+        const comboBonus = (combo - 1) * 20;
+        let pts = base + speedBonus + comboBonus;
+        if (activePowers.xp2) pts *= 2;
+        score += pts;
+        moves++;
+        document.getElementById('moves').textContent = moves;
+        document.getElementById('pairs').textContent = matched.length / 2;
+        document.getElementById('scoreDisplay').textContent = `⭐ ${score} pts`;
+        if (combo > 1) {
+          document.getElementById('comboDisplay').style.display = 'flex';
+          document.getElementById('comboNum').textContent = combo;
+        }
+        flipped = []; locked = false;
+        if (matched.length === cards.length) setTimeout(showVictory, 600);
+      }, 500);
+    }, 400);
   } else if(id==='xp2'){
     activePowers.xp2=true;
     showToast('🌟 XP dobrado ativado!');
@@ -1886,7 +1948,7 @@ function shuffle(arr){ return [...arr].sort(()=>Math.random()-0.5); }
 function initGame(){
   clearInterval(timerInterval);clearInterval(hardTimerInterval);stopBgMusic();
   flipped=[];matched=[];moves=0;seconds=0;locked=false;score=0;combo=0;timerStarted=false;hardTimeLeft=HARD_TIME;maxCombo=0;catsMatched=false;
-  activePowers={freeze:false,guaranteed:false,xp2:false};
+  activePowers={freeze:false,xp2:false};
   document.getElementById('moves').textContent=0;
   document.getElementById('pairs').textContent=0;
   document.getElementById('timer').textContent='0s';
@@ -1939,9 +2001,8 @@ function onCardClick(el,index){
 
 function checkMatch(){
   const [a,b]=flipped;
-  const isMatch = activePowers.guaranteed || cards[a.index].emoji===cards[b.index].emoji;
+  const isMatch = cards[a.index].emoji===cards[b.index].emoji;
   if(isMatch){
-    if(activePowers.guaranteed){ activePowers.guaranteed=false; renderPowerHUD(); }
     setTimeout(()=>{
       a.el.classList.add('matched'); b.el.classList.add('matched');
       spawnBurst(a.el); matched.push(a.index,b.index); combo++;
@@ -2397,12 +2458,23 @@ function openTab(tab) {
     const ids = tabContentMap[tab] || [];
     ids.forEach(id => {
       const el = document.getElementById(id);
-      // Só exibe aviso se o elemento estiver vazio ou com o placeholder padrão
-      if (el && (el.children.length === 0 || el.querySelector('.no-login-msg'))) {
-        el.innerHTML = '<p class="no-login-msg">Faça login para ver esta seção! 🌸</p>';
+      // Só exibe aviso se o elemento estiver vazio OU só tiver o placeholder inicial (não dados reais)
+      if (el) {
+        const txt = el.innerHTML.trim();
+        const isPlaceholder = txt === '' || (el.children.length <= 1 && el.querySelector('.no-login-msg'));
+        if (isPlaceholder) {
+          el.innerHTML = '<p class="no-login-msg">Faça login para ver esta seção! 🌸</p>';
+        }
       }
     });
     return; // não tenta carregar dados sem login
+  }
+  // Usuário logado mas auth pode ter chegado depois do openTab — sempre recarregar ao abrir aba
+  if (tab==='history')     { window._loadHistory && window._loadHistory(); }
+  if (tab==='gifts')       {
+    window._loadAllUsers && window._loadAllUsers();
+    window._loadGifts && window._loadGifts();
+    window._loadMessages && window._loadMessages();
   }
 
   if (tab==='leaderboard') window._loadLeaderboard && window._loadLeaderboard();
