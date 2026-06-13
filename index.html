@@ -781,6 +781,9 @@ audio{display:none}
 /* CAT SURPRISE */
 .cat-surprise{position:fixed;pointer-events:none;z-index:500;font-size:5rem;animation:catAppear 2.2s ease forwards}
 @keyframes catAppear{0%{opacity:0;transform:scale(0.3)}15%{opacity:1;transform:scale(1.2)}30%{transform:scale(1)}80%{opacity:1}100%{opacity:0;transform:scale(0.8) translateY(-30px)}}
+@keyframes flashbangPulse{0%{opacity:0;transform:scale(1.1)}100%{opacity:1;transform:scale(1)}}
+@keyframes flashbangBounce{from{transform:scale(1) rotate(-5deg)}to{transform:scale(1.2) rotate(5deg)}}
+@keyframes cardShake{0%{transform:translateX(0)}15%{transform:translateX(-8px) rotate(-3deg)}30%{transform:translateX(8px) rotate(3deg)}45%{transform:translateX(-6px) rotate(-2deg)}60%{transform:translateX(6px) rotate(2deg)}75%{transform:translateX(-3px)}90%{transform:translateX(3px)}100%{transform:translateX(0)}}
 
 /* ACHIEVEMENTS */
 .ach-grid{display:grid;grid-template-columns:1fr 1fr;gap:0.8rem}
@@ -1620,12 +1623,45 @@ function _showMagicCat(){
 }
 
 function _showFlashbang(){
+  // Cobre apenas a área do tabuleiro do duelo, não a tela inteira
+  const board=document.getElementById('duelBoard');
+  const arena=document.getElementById('viewDuel');
+  const target=board||arena;
+  if(!target){ return; }
+
+  // O container precisa de position:relative para o overlay funcionar
+  const prevPos=target.style.position;
+  if(getComputedStyle(target).position==='static') target.style.position='relative';
+
   const el=document.createElement('div');
-  el.style.cssText='position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);pointer-events:all';
-  el.innerHTML='<img src="flashbang.gif" style="max-width:90vw;max-height:80vh;border-radius:20px">';
-  document.body.appendChild(el);
+  el.style.cssText=`
+    position:absolute;inset:0;z-index:800;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    background:rgba(255,220,50,0.92);border-radius:inherit;
+    pointer-events:all;cursor:not-allowed;
+    animation:flashbangPulse 0.4s ease-out;
+  `;
+  el.innerHTML=`
+    <div style="font-size:4rem;animation:flashbangBounce 0.5s infinite alternate">😹</div>
+    <div style="font-size:1rem;font-weight:800;color:#7c3aed;margin-top:0.5rem;text-shadow:0 2px 8px rgba(0,0,0,0.2)">FLASHBANG! 3s...</div>
+  `;
+  target.appendChild(el);
   _playFlashbangSound();
-  setTimeout(()=>{ el.style.transition='opacity 0.3s'; el.style.opacity='0'; setTimeout(()=>el.remove(),300); },3000);
+
+  // Contador regressivo
+  let t=3;
+  const tick=setInterval(()=>{
+    t--;
+    const label=el.querySelector('div:last-child');
+    if(label) label.textContent=t>0?`FLASHBANG! ${t}s...`:'';
+    if(t<=0){ clearInterval(tick); }
+  },1000);
+
+  setTimeout(()=>{
+    el.style.transition='opacity 0.4s';
+    el.style.opacity='0';
+    setTimeout(()=>{ el.remove(); target.style.position=prevPos; },400);
+  },3000);
 }
 
 function _applyShuffleEffect(){
@@ -1640,16 +1676,31 @@ function _applyShuffleEffect(){
   const vals=unmatched.map(i=>({emoji:_duelCards[i].emoji,label:_duelCards[i].label}));
   for(let i=vals.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1));[vals[i],vals[j]]=[vals[j],vals[i]]; }
   unmatched.forEach((cardIdx,i)=>{ _duelCards[cardIdx].emoji=vals[i].emoji; _duelCards[cardIdx].label=vals[i].label; });
-  // Atualizar faces das cartas no DOM sem revelar
-  board.querySelectorAll('.card:not(.matched)').forEach(el=>{
-    const idx=parseInt(el.dataset.index);
-    const front=el.querySelector('.card-front');
-    if(front){
-      front.innerHTML=`<div class="emoji">${_duelCards[idx].emoji}</div><div class="label">${_duelCards[idx].label}</div>`;
-    }
-    el.classList.remove('flipped');
+
+  // Animação de chacoalho nas cartas não combinadas antes de atualizar
+  const unmatchedEls=[...board.querySelectorAll('.card:not(.matched)')];
+  unmatchedEls.forEach((el,i)=>{
+    el.style.animation='none';
+    // Escalonar levemente para efeito cascata
+    setTimeout(()=>{
+      el.style.animation=`cardShake 0.55s ease ${i*18}ms`;
+    },10);
   });
-  _duelFlipped=[]; _duelLocked=false;
+
+  // Atualizar faces e remover flip após a animação
+  setTimeout(()=>{
+    unmatchedEls.forEach(el=>{
+      el.style.animation='';
+      const idx=parseInt(el.dataset.index);
+      const front=el.querySelector('.card-front');
+      if(front){
+        front.innerHTML=`<div class="emoji">${_duelCards[idx].emoji}</div><div class="label">${_duelCards[idx].label}</div>`;
+      }
+      el.classList.remove('flipped');
+    });
+    _duelFlipped=[]; _duelLocked=false;
+  },620);
+
   showToast('🐱 Suas cartas foram embaralhadas!',true);
 }
 
@@ -1677,6 +1728,7 @@ const AudioCtxClass=window.AudioContext||window.webkitAudioContext;
 let actx;
 function getCtx(){ if(!actx) actx=new AudioCtxClass(); return actx; }
 let bgVolume=0.3;
+let _bgMusicStarted=false;
 
 function getBgMusic(){ return document.getElementById('bgMusic'); }
 
@@ -1685,6 +1737,7 @@ function startBgMusic(){
   if(bgVolume===0) return;
   bg.volume=bgVolume;
   bg.play().catch(()=>{});
+  _bgMusicStarted=true;
 }
 function stopBgMusic(){
   const bg=getBgMusic(); if(!bg) return;
@@ -1694,8 +1747,20 @@ function setVolume(val){
   bgVolume=val/100;
   document.getElementById('volIcon').textContent=bgVolume===0?'🔇':bgVolume<0.5?'🔉':'🎵';
   const bg=getBgMusic(); if(bg) bg.volume=bgVolume;
-  if(bgVolume===0) stopBgMusic(); else if(timerStarted){ startBgMusic(); }
+  if(bgVolume===0) stopBgMusic(); else if(_bgMusicStarted){ startBgMusic(); }
 }
+
+// Toca a música de fundo na primeira interação do usuário (contorna bloqueio de autoplay)
+(function(){
+  function _tryStartMusic(){
+    if(_bgMusicStarted) return;
+    startBgMusic();
+    document.removeEventListener('click', _tryStartMusic);
+    document.removeEventListener('keydown', _tryStartMusic);
+  }
+  document.addEventListener('click', _tryStartMusic);
+  document.addEventListener('keydown', _tryStartMusic);
+})();
 
 function playFlip(){
   try{ const ac=getCtx(),o=ac.createOscillator(),g=ac.createGain();o.connect(g);g.connect(ac.destination);o.type='sine';o.frequency.setValueAtTime(880,ac.currentTime);o.frequency.exponentialRampToValueAtTime(1200,ac.currentTime+0.12);g.gain.setValueAtTime(0.18,ac.currentTime);g.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.18);o.start(ac.currentTime);o.stop(ac.currentTime+0.18); }catch(e){}
