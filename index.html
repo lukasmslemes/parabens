@@ -32,7 +32,7 @@ onAuthStateChanged(auth, user => {
 
   // Esconder loading screen imediatamente — sempre, antes de qualquer outra coisa
   const ls = document.getElementById('loadingScreen');
-  if (ls) { ls.classList.add('hide'); setTimeout(() => ls.remove(), 700); }
+  if (ls) { ls.style.opacity='0'; ls.style.pointerEvents='none'; setTimeout(() => { if(ls.parentNode) ls.parentNode.removeChild(ls); }, 700); }
 
   if (user) {
     startNotifListener(user.uid);
@@ -953,20 +953,19 @@ audio{display:none}
 <body>
 
 <!-- LOADING SCREEN -->
-<script>
-// Timeout de segurança: Chrome/mobile às vezes não dispara onAuthStateChanged
-// (cache do Google corrompido, Firebase demorar, etc.)
-// Força esconder a loading screen após 5s mesmo sem resposta do Firebase
-setTimeout(function() {
-  var ls = document.getElementById('loadingScreen');
-  if (ls && ls.parentNode) { ls.classList.add('hide'); setTimeout(function(){ if(ls && ls.parentNode) ls.parentNode.removeChild(ls); }, 700); }
-}, 5000);
-</script>
 <div id="loadingScreen">
   <div class="loading-emoji">🌸</div>
   <div class="loading-title">Jogo da Memória</div>
   <div class="loading-dots"><span></span><span></span><span></span></div>
 </div>
+<script>
+// Timeout de segurança: garante que a loading screen some mesmo se o Firebase demorar
+// (executado APÓS o elemento existir no DOM)
+setTimeout(function() {
+  var ls = document.getElementById('loadingScreen');
+  if (ls) { ls.style.opacity='0'; ls.style.pointerEvents='none'; setTimeout(function(){ if(ls && ls.parentNode) ls.parentNode.removeChild(ls); }, 700); }
+}, 5000);
+</script>
 
 <audio id="victoryMusic" src="parabens.mp3" loop></audio>
 <audio id="bgMusic" src="soundtrack.mp3" loop></audio>
