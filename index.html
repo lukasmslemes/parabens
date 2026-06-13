@@ -10,6 +10,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged, updateProfile } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import { getFirestore, doc, setDoc, getDoc, collection, getDocs, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getMessaging, getToken, onMessage } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyATJAen6Qtzm-uOqHtD6ubQUDmVdqG1BUM",
@@ -23,25 +24,33 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const googleProvider = new GoogleAuthProvider();
+let messaging = null;
+try { messaging = getMessaging(app); } catch(e) { console.warn('FCM não suportado neste browser', e); }
 
 let unsubNotif = null;
 
 onAuthStateChanged(auth, user => {
   window._currentUser = user;
   updateAuthUI(user);
-
   if (user) {
+    window._loadLeaderboard && window._loadLeaderboard();
+    window._loadPersonalRecords && window._loadPersonalRecords();
+    window._loadHistory && window._loadHistory();
+    window._loadAllUsers && window._loadAllUsers();
     startNotifListener(user.uid);
-    // FCM só se já tem permissão — nunca bloqueia o fluxo principal
-    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      setTimeout(() => initFCM(user.uid), 2000); // delay para não concorrer com carregamento
-    }
+    // Inicializar FCM push (só se PWA instalado ou permissão já concedida)
+    if (Notification && Notification.permission === 'granted') { initFCM(user.uid); }
+    // Set online presence
     setOnlinePresence(user.uid, true);
+    // Duel challenge listener
     window._startDuelListener && window._startDuelListener(user.uid);
+    // Load coins and inventory from Firestore (overrides localStorage)
     window._loadCoinsFromFirestore && window._loadCoinsFromFirestore(user.uid).then(({ coins, inventory }) => {
       if (coins !== null) {
+        // Usuário existente — carregar do Firestore
         localStorage.setItem('coins_' + user.uid, String(coins));
       } else {
+        // Novo usuário — começar com 500 moedas
         localStorage.setItem('coins_' + user.uid, '500');
         window._syncCoinsToFirestore && window._syncCoinsToFirestore(user.uid, 500, {});
         window.showToast && window.showToast('🎉 Bem-vinda! Você ganhou 500 moedas de boas-vindas! 🪙');
@@ -51,25 +60,36 @@ onAuthStateChanged(auth, user => {
       }
       window._renderCoinDisplay && window._renderCoinDisplay();
     });
+  } else {
+    if (unsubNotif) { unsubNotif(); unsubNotif = null; }
+  }
+  // Hide loading screen once auth state is known
+  const ls = document.getElementById('loadingScreen');
+  if (ls) { ls.classList.add('hide'); setTimeout(() => ls.remove(), 700); }
 
+
+  // Corrige bug: openTab pode ter sido chamado antes do auth resolver.
+  // Após o auth estar pronto, recarrega a aba ativa se ela depende de login.
+  if (user) {
     setTimeout(() => {
-      window._loadLeaderboard && window._loadLeaderboard();
-      window._loadPersonalRecords && window._loadPersonalRecords();
-      window._loadHistory && window._loadHistory();
-      window._loadAllUsers && window._loadAllUsers();
-      const activeTab = Object.keys(TAB_BTNS || {}).find(k => {
-        const btn = document.getElementById((TAB_BTNS||{})[k]);
+      const activeTab = Object.keys(TAB_BTNS).find(k => {
+        const btn = document.getElementById(TAB_BTNS[k]);
         return btn && btn.classList.contains('active');
       });
-      if (activeTab === 'gifts') {
+      if (activeTab === 'history') {
+        window._loadHistory && window._loadHistory();
+      } else if (activeTab === 'gifts') {
+        window._loadAllUsers && window._loadAllUsers();
         window._loadGifts && window._loadGifts();
         window._loadMessages && window._loadMessages();
+      } else if (activeTab === 'records') {
+        window._loadPersonalRecords && window._loadPersonalRecords();
+      } else if (activeTab === 'leaderboard') {
+        window._loadLeaderboard && window._loadLeaderboard();
       } else if (activeTab === 'daily') {
         window.renderDailyTab && window.renderDailyTab();
       }
-    }, 500);
-  } else {
-    if (unsubNotif) { unsubNotif(); unsubNotif = null; }
+    }, 300);
   }
 });
 
@@ -303,25 +323,28 @@ function startNotifListener(uid) {
   const unsubM = onSnapshot(qM, snap => { unreadMsgs = snap.size; updateBadge(); });
   unsubNotif = () => { unsubG(); unsubM(); };
 }
+// ── FIREBASE CLOUD MESSAGING (Push Notifications) ─────
+// VAPID key: gere no Firebase Console → Configurações do Projeto
+// → Cloud Messaging → Certificados Web Push → Gerar par de chaves
+const FCM_VAPID_KEY = 'SUA_VAPID_KEY_AQUI'; // ⚠️ substitua pela sua VAPID key
 
-// ── FIREBASE CLOUD MESSAGING (Push Notifications) ──────
-// Import dinâmico — não bloqueia o módulo principal no Chrome
 async function initFCM(uid) {
+  if (!messaging) return;
   if (!('Notification' in window)) return;
   if (!('serviceWorker' in navigator)) return;
   try {
-    const { getMessaging, getToken, onMessage } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js");
-    const _messaging = getMessaging(app);
     const swReg = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') return;
-    const token = await getToken(_messaging, {
-      vapidKey: 'SUA_VAPID_KEY_AQUI', // substitua pela sua VAPID key do Firebase Console
+    const token = await getToken(messaging, {
+      vapidKey: FCM_VAPID_KEY,
       serviceWorkerRegistration: swReg
     });
     if (!token) return;
-    await setDoc(doc(db, 'fcm_tokens', uid), { token, uid, updatedAt: serverTimestamp() }, { merge: true });
-    onMessage(_messaging, payload => {
+    await setDoc(doc(db, 'fcm_tokens', uid), {
+      token, uid, updatedAt: serverTimestamp()
+    }, { merge: true });
+    onMessage(messaging, payload => {
       const n = payload.notification || {};
       const title = n.title || '🌸 Jogo da Memória';
       const body  = n.body  || 'Nova notificação!';
@@ -330,19 +353,24 @@ async function initFCM(uid) {
         new Notification(title, { body, icon: '/icon-192.png' });
       }
     });
+    console.log('✅ FCM ativo. Token salvo no Firestore.');
   } catch(e) { console.warn('FCM init error:', e); }
 }
 
 window.togglePushNotifications = async function() {
   const user = window._currentUser;
   if (!user) { window.showToast && window.showToast('Faça login para ativar notificações!', true); return; }
-  if (typeof Notification !== 'undefined' && Notification.permission === 'denied') {
+  if (Notification.permission === 'denied') {
     window.showToast && window.showToast('Notificações bloqueadas. Permita nas configurações do navegador.', true);
     return;
   }
   await initFCM(user.uid);
   window.showToast && window.showToast('🔔 Notificações push ativadas!');
 };
+
+
+
+// ── DUELS ─────────────────────────────────────────────
 window.sendDuelChallenge = async function(toUid, toName, bet) {
   const user = window._currentUser; if (!user) return;
   const fromName = user.displayName || user.email.split('@')[0];
@@ -792,11 +820,22 @@ audio{display:none}
 .letter-btn:hover{transform:scale(1.12);box-shadow:0 6px 24px rgba(233,30,140,0.55)}
 
 /* LOADING SCREEN */
-
+#loadingScreen{position:fixed;inset:0;background:var(--cream);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1.2rem;transition:opacity 0.6s ease}
+#loadingScreen.hide{opacity:0;pointer-events:none}
+.loading-emoji{font-size:4rem;animation:loadingBounce 1s ease-in-out infinite}
+@keyframes loadingBounce{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-16px) scale(1.1)}}
+.loading-title{font-family:'Pacifico',cursive;color:var(--pink-deep);font-size:1.8rem;text-align:center}
+.loading-dots span{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--pink-deep);margin:0 4px;animation:dotPulse 1.2s ease-in-out infinite}
+.loading-dots span:nth-child(2){animation-delay:0.2s;background:var(--lilac)}
+.loading-dots span:nth-child(3){animation-delay:0.4s;background:var(--pink)}
+@keyframes dotPulse{0%,80%,100%{transform:scale(0.6);opacity:0.4}40%{transform:scale(1);opacity:1}}
 
 /* CAT SURPRISE */
 .cat-surprise{position:fixed;pointer-events:none;z-index:500;font-size:5rem;animation:catAppear 2.2s ease forwards}
 @keyframes catAppear{0%{opacity:0;transform:scale(0.3)}15%{opacity:1;transform:scale(1.2)}30%{transform:scale(1)}80%{opacity:1}100%{opacity:0;transform:scale(0.8) translateY(-30px)}}
+@keyframes flashbangPulse{0%{opacity:0;transform:scale(1.1)}100%{opacity:1;transform:scale(1)}}
+@keyframes flashbangBounce{from{transform:scale(1) rotate(-5deg)}to{transform:scale(1.2) rotate(5deg)}}
+@keyframes cardShake{0%{transform:translateX(0)}15%{transform:translateX(-8px) rotate(-3deg)}30%{transform:translateX(8px) rotate(3deg)}45%{transform:translateX(-6px) rotate(-2deg)}60%{transform:translateX(6px) rotate(2deg)}75%{transform:translateX(-3px)}90%{transform:translateX(3px)}100%{transform:translateX(0)}}
 
 /* ACHIEVEMENTS */
 .ach-grid{display:grid;grid-template-columns:1fr 1fr;gap:0.8rem}
@@ -941,7 +980,19 @@ audio{display:none}
 <body>
 
 <!-- LOADING SCREEN -->
-
+<script>
+// Timeout de segurança: Chrome às vezes não dispara onAuthStateChanged rapidamente
+// Força esconder a loading screen após 6s mesmo sem resposta do Firebase
+setTimeout(function() {
+  var ls = document.getElementById('loadingScreen');
+  if (ls) { ls.classList.add('hide'); setTimeout(function(){ if(ls.parentNode) ls.remove(); }, 700); }
+}, 6000);
+</script>
+<div id="loadingScreen">
+  <div class="loading-emoji">🌸</div>
+  <div class="loading-title">Jogo da Memória</div>
+  <div class="loading-dots"><span></span><span></span><span></span></div>
+</div>
 
 <audio id="victoryMusic" src="parabens.mp3" loop></audio>
 <audio id="bgMusic" src="soundtrack.mp3" loop></audio>
@@ -1010,6 +1061,7 @@ audio{display:none}
     <button class="tab" onclick="openTab('profile')" id="tabProfile">👤 Perfil</button>
     <button class="tab" onclick="openTab('gifts')" id="tabGifts">💌 Social</button>
     <button class="tab" onclick="openTab('shop')" id="tabShop">🛍️ Loja</button>
+    <button class="tab" onclick="openTab('inventory')" id="tabInventory">🎒 Inventário</button>
     <button class="tab" onclick="openTab('daily')" id="tabDaily">📅 Diário</button>
     <button class="tab" onclick="openTab('duel')" id="tabDuel" style="display:none">⚔️ Duelo</button>
   </div>
@@ -1077,6 +1129,14 @@ audio{display:none}
     </div>
   </div>
 
+  <!-- INVENTÁRIO VIEW -->
+  <div id="viewInventory" style="display:none;margin-top:1rem">
+    <div class="panel">
+      <h3>🎒 Meu Inventário</h3>
+      <div id="inventoryContent"><p class="no-login-msg">Faça login para ver seu inventário! 🌸</p></div>
+    </div>
+  </div>
+
   <!-- DUEL BOARD VIEW -->
   <div id="viewDuel" style="display:none;margin-top:1rem">
     <div class="duel-arena">
@@ -1118,6 +1178,9 @@ audio{display:none}
 
       <!-- Status texto -->
       <div id="duelStatusBar" class="duel-status-bar">⚔️ Duelo em andamento!</div>
+
+      <!-- Poderes disponíveis no duelo -->
+      <div id="duelPowerHUD" style="display:flex;justify-content:center;gap:0.5rem;margin:0.4rem 0;flex-wrap:wrap"></div>
 
       <!-- Tabuleiro do duelo (shared seed) -->
       <div class="board" id="duelBoard"></div>
@@ -1405,16 +1468,16 @@ window._renderCoinDisplay = function(){
 
 // ── SHOP ─────────────────────────────────────────────
 const SHOP_ITEMS = [
-  { id:'revealer',   icon:'🔍', name:'Revelador',      desc:'Revela todas as cartas por 2s',                      price:500, modes:['normal','hard'] },
-  { id:'freeze',     icon:'❄️', name:'Congelar Tempo',  desc:'Para o cronômetro por 15s (só Difícil)',              price:400, modes:['hard'] },
-  { id:'guaranteed', icon:'💣', name:'Par Garantido',   desc:'Garante o próximo par certo',                        price:600, modes:['normal','hard'] },
-  { id:'xp2',        icon:'🌟', name:'Dobrador de XP',  desc:'Dobra os pontos desta partida',                     price:300, modes:['normal','hard'] },
-  { id:'shuffle',    icon:'🐱', name:'Embaralhar',      desc:'Embaralha as cartas do oponente no duelo! 🪄',        price:450, modes:['duel'] },
-  { id:'flashbang',  icon:'😹', name:'Flashbang Gato',  desc:'Um gato rindo toma a tela do oponente por 3s! 😂',   price:350, modes:['duel'] },
+  { id:'revealer',   icon:'🔍', name:'Revelador',      desc:'Revela todas as cartas por 2s',                      price:300, modes:['normal','hard'] },
+  { id:'freeze',     icon:'❄️', name:'Congelar Tempo',  desc:'Para o cronômetro por 15s (só Difícil)',              price:250, modes:['hard'] },
+  { id:'guaranteed', icon:'💣', name:'Par Garantido',   desc:'Garante o próximo par certo',                        price:200, modes:['normal','hard'] },
+  { id:'xp2',        icon:'🌟', name:'Dobrador de XP',  desc:'Dobra os pontos desta partida',                     price:150, modes:['normal','hard'] },
+  { id:'shuffle',    icon:'🐱', name:'Embaralhar',      desc:'Embaralha as cartas do oponente no duelo! 🪄',        price:150, modes:['duel'] },
+  { id:'flashbang',  icon:'😹', name:'Flashbang Gato',  desc:'Um gato rindo toma a tela do oponente por 3s! 😂',   price:150, modes:['duel'] },
 ];
 
 // Active powers for current game
-let activePowers = { freeze: false, guaranteed: false, xp2: false };
+let activePowers = { freeze: false, xp2: false };
 
 function renderShop(){
   const el=document.getElementById('shopContent'); if(!el) return;
@@ -1456,25 +1519,72 @@ function buyItem(id){
   renderPowerHUD();
 }
 
+function renderInventory(){
+  const el=document.getElementById('inventoryContent'); if(!el) return;
+  if(!window._currentUser){ el.innerHTML='<p class="no-login-msg">Faça login para ver seu inventário! 🌸</p>'; return; }
+  const inv=getInventory();
+  const coins=getCoins();
+  const owned=SHOP_ITEMS.filter(item=>(inv[item.id]||0)>0);
+
+  let html=`<div style="text-align:center;margin-bottom:1.2rem">
+    <div style="font-size:1.4rem;font-weight:800;color:var(--pink-deep)">🪙 ${coins} moedas disponíveis</div>
+  </div>`;
+
+  if(owned.length===0){
+    html+=`<div style="text-align:center;padding:2rem 0">
+      <div style="font-size:3rem;margin-bottom:0.6rem">🎒</div>
+      <p style="color:var(--text2);font-size:0.9rem;margin-bottom:1rem">Seu inventário está vazio!<br>Compre poderes na loja para usar nas partidas.</p>
+      <button class="btn" style="font-size:0.9rem;padding:0.5rem 1.5rem" onclick="openTab('shop')">🛍️ Ir para a Loja</button>
+    </div>`;
+  } else {
+    html+=`<div class="shop-grid">
+      ${owned.map(item=>{
+        const qty=inv[item.id];
+        const isDuel=item.modes.length===1&&item.modes[0]==='duel';
+        return `<div class="shop-card${isDuel?' duel-item':''}">
+          <div class="shop-icon">${item.icon}</div>
+          <div class="shop-name">${item.name}${isDuel?'<span class="duel-badge">⚔️ Duelo</span>':''}</div>
+          <div class="shop-desc">${item.desc}</div>
+          <div style="font-size:1.5rem;font-weight:800;color:var(--pink-deep);margin:0.4rem 0">${qty}x</div>
+          <div style="font-size:0.72rem;color:var(--text2)">no inventário</div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div style="text-align:center;margin-top:1rem">
+      <button class="btn" style="font-size:0.85rem;padding:0.45rem 1.4rem;background:linear-gradient(135deg,var(--lilac),var(--pink))" onclick="openTab('shop')">🛍️ Comprar mais poderes</button>
+    </div>`;
+  }
+
+  // Itens que o jogador ainda não tem
+  const missing=SHOP_ITEMS.filter(item=>(inv[item.id]||0)===0);
+  if(missing.length>0){
+    html+=`<div style="margin-top:1.4rem">
+      <p style="font-size:0.8rem;font-weight:700;color:var(--text2);text-align:center;margin-bottom:0.6rem">— Poderes que você ainda não tem —</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.5rem;justify-content:center">
+        ${missing.map(item=>`
+          <div style="display:flex;align-items:center;gap:0.4rem;background:var(--card-bg);border:1.5px dashed var(--border);border-radius:12px;padding:0.4rem 0.8rem;opacity:0.6">
+            <span style="font-size:1.2rem">${item.icon}</span>
+            <span style="font-size:0.8rem;color:var(--text2)">${item.name}</span>
+            <span style="font-size:0.75rem;color:var(--pink-deep);font-weight:700">🪙${item.price}</span>
+          </div>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  el.innerHTML=html;
+}
+
 function renderPowerHUD(){
   const el=document.getElementById('powerHUD'); if(!el) return;
   const inv=getInventory();
   const inGame=timerStarted;
   const inDuel=!!_duelState && !_duelFinished;
+
+  // HUD do jogo normal (sem poderes exclusivos de duelo)
   el.innerHTML=SHOP_ITEMS.map(item=>{
     const qty=inv[item.id]||0;
     const isDuelOnly=item.modes.length===1&&item.modes[0]==='duel';
-    if(isDuelOnly){
-      // Mostrar só no duelo
-      if(!inDuel) return '';
-      const canUse=qty>0&&inDuel;
-      return `<button class="power-btn duel-power${canUse?'':' muted'}"
-        onclick="usePower('${item.id}')"
-        title="${item.name}: ${item.desc}"
-        ${canUse?'':' disabled'}>
-        ${item.icon} <span class="power-qty">${qty}</span>
-      </button>`;
-    }
+    if(isDuelOnly) return '';
     const modeOk=item.modes.includes(gameMode);
     const active=activePowers[item.id];
     const canUse=qty>0&&modeOk&&inGame&&!active;
@@ -1485,22 +1595,43 @@ function renderPowerHUD(){
       ${item.icon} <span class="power-qty">${qty}</span>
     </button>`;
   }).join('');
+
+  // HUD do duelo (todos exceto freeze)
+  const duelEl=document.getElementById('duelPowerHUD');
+  if(duelEl){
+    const duelItems=SHOP_ITEMS.filter(item=>item.id!=='freeze');
+    duelEl.innerHTML=duelItems.map(item=>{
+      const qty=inv[item.id]||0;
+      const canUse=qty>0&&inDuel;
+      return `<button class="power-btn duel-power${canUse?'':' muted'}"
+        onclick="usePower('${item.id}')"
+        title="${item.name}: ${item.desc}"
+        ${canUse?'':' disabled'}>
+        ${item.icon} <span class="power-qty">${qty}</span>
+      </button>`;
+    }).join('');
+  }
 }
 
 function usePower(id){
-  if(!timerStarted){ showToast('Inicie o jogo primeiro! 🎮',true); return; }
+  const inDuel=!!_duelState&&!_duelFinished;
+  if(!inDuel && !timerStarted){ showToast('Inicie o jogo primeiro! 🎮',true); return; }
   const item=SHOP_ITEMS.find(i=>i.id===id); if(!item) return;
-  if(!item.modes.includes(gameMode)){ showToast(`${item.icon} Só disponível no modo ${item.modes.join('/')}!`,true); return; }
+  // No duelo, bloquear só freeze (não se aplica ao duelo)
+  if(!inDuel && !item.modes.includes(gameMode)){ showToast(`${item.icon} Só disponível no modo ${item.modes.join('/')}!`,true); return; }
+  if(id==='freeze'&&inDuel){ showToast('❄️ Freeze não disponível no duelo!',true); return; }
   if(getItemCount(id)<=0){ showToast('Sem estoque! Compre na loja 🛍️',true); return; }
   if(!useItem(id)){ return; }
 
   if(id==='revealer'){
-    // Revela todas as cartas por 2s
-    document.querySelectorAll('.card:not(.matched)').forEach(c=>c.classList.add('flipped'));
+    // Revela todas as cartas por 2s (no duelo, usa o duelBoard)
+    const boardSel=inDuel?'#duelBoard .card:not(.matched)':'.card:not(.matched)';
+    document.querySelectorAll(boardSel).forEach(c=>c.classList.add('flipped'));
     showToast('🔍 Cartas reveladas por 2s!');
     setTimeout(()=>{
-      document.querySelectorAll('.card:not(.matched)').forEach(c=>{
-        if(!flipped.find(f=>f.el===c)) c.classList.remove('flipped');
+      document.querySelectorAll(boardSel).forEach(c=>{
+        if(inDuel){ if(!_duelFlipped.find(f=>f.el===c)) c.classList.remove('flipped'); }
+        else{ if(!flipped.find(f=>f.el===c)) c.classList.remove('flipped'); }
       });
     },2000);
   } else if(id==='freeze'){
@@ -1516,8 +1647,61 @@ function usePower(id){
       renderPowerHUD();
     },15000);
   } else if(id==='guaranteed'){
-    activePowers.guaranteed=true;
-    showToast('💣 Próximo par garantido!');
+    // Encontrar um par não descoberto e revelá-lo automaticamente com animação
+    const unmatched = cards
+      .map((c, i) => ({ ...c, i }))
+      .filter(c => !matched.includes(c.i));
+
+    // Agrupar por emoji para encontrar um par
+    const groups = {};
+    unmatched.forEach(c => {
+      if (!groups[c.emoji]) groups[c.emoji] = [];
+      groups[c.emoji].push(c.i);
+    });
+    const pair = Object.values(groups).find(g => g.length >= 2);
+    if (!pair) { showToast('💣 Nenhum par disponível!', true); addItem(id); return; }
+
+    const [idxA, idxB] = pair;
+    const cardEls = document.querySelectorAll('#board .card');
+    const elA = cardEls[idxA];
+    const elB = cardEls[idxB];
+    if (!elA || !elB) { addItem(id); return; }
+
+    showToast('💣 Par revelado automaticamente! ✨');
+    locked = true;
+
+    // Revelar carta A
+    elA.classList.add('flipped');
+    setTimeout(() => {
+      // Revelar carta B
+      elB.classList.add('flipped');
+      setTimeout(() => {
+        // Marcar como matched
+        elA.classList.add('matched');
+        elB.classList.add('matched');
+        spawnBurst(elA); spawnBurst(elB);
+        matched.push(idxA, idxB);
+        combo++;
+        if (combo > maxCombo) maxCombo = combo;
+        playComboSound(combo);
+        const base = gameMode === 'hard' ? 150 : 100;
+        const speedBonus = Math.max(0, 30 - seconds) * (gameMode === 'hard' ? 3 : 2);
+        const comboBonus = (combo - 1) * 20;
+        let pts = base + speedBonus + comboBonus;
+        if (activePowers.xp2) pts *= 2;
+        score += pts;
+        moves++;
+        document.getElementById('moves').textContent = moves;
+        document.getElementById('pairs').textContent = matched.length / 2;
+        document.getElementById('scoreDisplay').textContent = `⭐ ${score} pts`;
+        if (combo > 1) {
+          document.getElementById('comboDisplay').style.display = 'flex';
+          document.getElementById('comboNum').textContent = combo;
+        }
+        flipped = []; locked = false;
+        if (matched.length === cards.length) setTimeout(showVictory, 600);
+      }, 500);
+    }, 400);
   } else if(id==='xp2'){
     activePowers.xp2=true;
     showToast('🌟 XP dobrado ativado!');
@@ -1552,12 +1736,45 @@ function _showMagicCat(){
 }
 
 function _showFlashbang(){
+  // Cobre apenas a área do tabuleiro do duelo, não a tela inteira
+  const board=document.getElementById('duelBoard');
+  const arena=document.getElementById('viewDuel');
+  const target=board||arena;
+  if(!target){ return; }
+
+  // O container precisa de position:relative para o overlay funcionar
+  const prevPos=target.style.position;
+  if(getComputedStyle(target).position==='static') target.style.position='relative';
+
   const el=document.createElement('div');
-  el.style.cssText='position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);pointer-events:all';
-  el.innerHTML='<img src="flashbang.gif" style="max-width:90vw;max-height:80vh;border-radius:20px">';
-  document.body.appendChild(el);
+  el.style.cssText=`
+    position:absolute;inset:0;z-index:800;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    background:rgba(255,220,50,0.92);border-radius:inherit;
+    pointer-events:all;cursor:not-allowed;
+    animation:flashbangPulse 0.4s ease-out;
+  `;
+  el.innerHTML=`
+    <img src="flashbang.gif" style="width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block">
+    <div style="position:absolute;bottom:0.6rem;left:0;right:0;text-align:center;font-size:0.85rem;font-weight:800;color:#fff;text-shadow:0 2px 6px rgba(0,0,0,0.7)" id="_fbCountdown">3s</div>
+  `;
+  target.appendChild(el);
   _playFlashbangSound();
-  setTimeout(()=>{ el.style.transition='opacity 0.3s'; el.style.opacity='0'; setTimeout(()=>el.remove(),300); },3000);
+
+  // Contador regressivo
+  let t=3;
+  const tick=setInterval(()=>{
+    t--;
+    const label=document.getElementById('_fbCountdown');
+    if(label) label.textContent=t>0?`${t}s`:'';
+    if(t<=0){ clearInterval(tick); }
+  },1000);
+
+  setTimeout(()=>{
+    el.style.transition='opacity 0.4s';
+    el.style.opacity='0';
+    setTimeout(()=>{ el.remove(); target.style.position=prevPos; },400);
+  },3000);
 }
 
 function _applyShuffleEffect(){
@@ -1572,16 +1789,31 @@ function _applyShuffleEffect(){
   const vals=unmatched.map(i=>({emoji:_duelCards[i].emoji,label:_duelCards[i].label}));
   for(let i=vals.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1));[vals[i],vals[j]]=[vals[j],vals[i]]; }
   unmatched.forEach((cardIdx,i)=>{ _duelCards[cardIdx].emoji=vals[i].emoji; _duelCards[cardIdx].label=vals[i].label; });
-  // Atualizar faces das cartas no DOM sem revelar
-  board.querySelectorAll('.card:not(.matched)').forEach(el=>{
-    const idx=parseInt(el.dataset.index);
-    const front=el.querySelector('.card-front');
-    if(front){
-      front.innerHTML=`<div class="emoji">${_duelCards[idx].emoji}</div><div class="label">${_duelCards[idx].label}</div>`;
-    }
-    el.classList.remove('flipped');
+
+  // Animação de chacoalho nas cartas não combinadas antes de atualizar
+  const unmatchedEls=[...board.querySelectorAll('.card:not(.matched)')];
+  unmatchedEls.forEach((el,i)=>{
+    el.style.animation='none';
+    // Escalonar levemente para efeito cascata
+    setTimeout(()=>{
+      el.style.animation=`cardShake 0.55s ease ${i*18}ms`;
+    },10);
   });
-  _duelFlipped=[]; _duelLocked=false;
+
+  // Atualizar faces e remover flip após a animação
+  setTimeout(()=>{
+    unmatchedEls.forEach(el=>{
+      el.style.animation='';
+      const idx=parseInt(el.dataset.index);
+      const front=el.querySelector('.card-front');
+      if(front){
+        front.innerHTML=`<div class="emoji">${_duelCards[idx].emoji}</div><div class="label">${_duelCards[idx].label}</div>`;
+      }
+      el.classList.remove('flipped');
+    });
+    _duelFlipped=[]; _duelLocked=false;
+  },620);
+
   showToast('🐱 Suas cartas foram embaralhadas!',true);
 }
 
@@ -1609,6 +1841,7 @@ const AudioCtxClass=window.AudioContext||window.webkitAudioContext;
 let actx;
 function getCtx(){ if(!actx) actx=new AudioCtxClass(); return actx; }
 let bgVolume=0.3;
+let _bgMusicStarted=false;
 
 function getBgMusic(){ return document.getElementById('bgMusic'); }
 
@@ -1617,6 +1850,7 @@ function startBgMusic(){
   if(bgVolume===0) return;
   bg.volume=bgVolume;
   bg.play().catch(()=>{});
+  _bgMusicStarted=true;
 }
 function stopBgMusic(){
   const bg=getBgMusic(); if(!bg) return;
@@ -1626,8 +1860,20 @@ function setVolume(val){
   bgVolume=val/100;
   document.getElementById('volIcon').textContent=bgVolume===0?'🔇':bgVolume<0.5?'🔉':'🎵';
   const bg=getBgMusic(); if(bg) bg.volume=bgVolume;
-  if(bgVolume===0) stopBgMusic(); else if(timerStarted){ startBgMusic(); }
+  if(bgVolume===0) stopBgMusic(); else if(_bgMusicStarted){ startBgMusic(); }
 }
+
+// Toca a música de fundo na primeira interação do usuário (contorna bloqueio de autoplay)
+(function(){
+  function _tryStartMusic(){
+    if(_bgMusicStarted) return;
+    startBgMusic();
+    document.removeEventListener('click', _tryStartMusic);
+    document.removeEventListener('keydown', _tryStartMusic);
+  }
+  document.addEventListener('click', _tryStartMusic);
+  document.addEventListener('keydown', _tryStartMusic);
+})();
 
 function playFlip(){
   try{ const ac=getCtx(),o=ac.createOscillator(),g=ac.createGain();o.connect(g);g.connect(ac.destination);o.type='sine';o.frequency.setValueAtTime(880,ac.currentTime);o.frequency.exponentialRampToValueAtTime(1200,ac.currentTime+0.12);g.gain.setValueAtTime(0.18,ac.currentTime);g.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.18);o.start(ac.currentTime);o.stop(ac.currentTime+0.18); }catch(e){}
@@ -1702,7 +1948,7 @@ function shuffle(arr){ return [...arr].sort(()=>Math.random()-0.5); }
 function initGame(){
   clearInterval(timerInterval);clearInterval(hardTimerInterval);stopBgMusic();
   flipped=[];matched=[];moves=0;seconds=0;locked=false;score=0;combo=0;timerStarted=false;hardTimeLeft=HARD_TIME;maxCombo=0;catsMatched=false;
-  activePowers={freeze:false,guaranteed:false,xp2:false};
+  activePowers={freeze:false,xp2:false};
   document.getElementById('moves').textContent=0;
   document.getElementById('pairs').textContent=0;
   document.getElementById('timer').textContent='0s';
@@ -1755,9 +2001,8 @@ function onCardClick(el,index){
 
 function checkMatch(){
   const [a,b]=flipped;
-  const isMatch = activePowers.guaranteed || cards[a.index].emoji===cards[b.index].emoji;
+  const isMatch = cards[a.index].emoji===cards[b.index].emoji;
   if(isMatch){
-    if(activePowers.guaranteed){ activePowers.guaranteed=false; renderPowerHUD(); }
     setTimeout(()=>{
       a.el.classList.add('matched'); b.el.classList.add('matched');
       spawnBurst(a.el); matched.push(a.index,b.index); combo++;
@@ -2119,6 +2364,17 @@ async function renderProfile() {
       <p style="font-size:0.7rem;color:var(--text2);text-align:center">Foto salva de forma segura · máx 1MB</p>
     </div>
 
+    <div class="profile-section" style="margin-top:1rem">
+      <div class="profile-section-title">— notificações push —</div>
+      <div style="text-align:center;margin-top:0.6rem">
+        ${('Notification' in window && Notification.permission === 'granted')
+          ? '<p style="color:var(--primary);font-size:0.85rem">🔔 Notificações push ativadas!</p>'
+          : '<button class="btn-submit" onclick="window.togglePushNotifications()" style="width:auto;padding:0.5rem 1.5rem">🔔 Ativar notificações push</button>'
+        }
+        <p style="font-size:0.7rem;color:var(--text2);margin-top:0.3rem">Receba avisos de duelos e presentes mesmo com o app fechado</p>
+      </div>
+    </div>
+
     <div class="profile-section">
       <div class="profile-section-title">— ou escolha um avatar emoji —</div>
       <div class="avatar-grid" id="avatarGrid"></div>
@@ -2202,12 +2458,23 @@ function openTab(tab) {
     const ids = tabContentMap[tab] || [];
     ids.forEach(id => {
       const el = document.getElementById(id);
-      // Só exibe aviso se o elemento estiver vazio ou com o placeholder padrão
-      if (el && (el.children.length === 0 || el.querySelector('.no-login-msg'))) {
-        el.innerHTML = '<p class="no-login-msg">Faça login para ver esta seção! 🌸</p>';
+      // Só exibe aviso se o elemento estiver vazio OU só tiver o placeholder inicial (não dados reais)
+      if (el) {
+        const txt = el.innerHTML.trim();
+        const isPlaceholder = txt === '' || (el.children.length <= 1 && el.querySelector('.no-login-msg'));
+        if (isPlaceholder) {
+          el.innerHTML = '<p class="no-login-msg">Faça login para ver esta seção! 🌸</p>';
+        }
       }
     });
     return; // não tenta carregar dados sem login
+  }
+  // Usuário logado mas auth pode ter chegado depois do openTab — sempre recarregar ao abrir aba
+  if (tab==='history')     { window._loadHistory && window._loadHistory(); }
+  if (tab==='gifts')       {
+    window._loadAllUsers && window._loadAllUsers();
+    window._loadGifts && window._loadGifts();
+    window._loadMessages && window._loadMessages();
   }
 
   if (tab==='leaderboard') window._loadLeaderboard && window._loadLeaderboard();
@@ -2216,6 +2483,7 @@ function openTab(tab) {
   if (tab==='achievements') renderAchievements();
   if (tab==='profile')     renderProfile();
   if (tab==='shop')        renderShop();
+  if (tab==='inventory')   renderInventory();
   if (tab==='gifts') {
     window._loadAllUsers && window._loadAllUsers();
     window._loadGifts && window._loadGifts();
@@ -2541,6 +2809,9 @@ window.startDuelBoard = function(duel) {
 
   // Preencher HUD
   _updateDuelHUD();
+
+  // Renderizar poderes disponíveis no duelo
+  renderPowerHUD();
 
   // Renderizar tabuleiro
   _renderDuelBoard();
