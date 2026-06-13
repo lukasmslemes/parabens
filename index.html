@@ -61,6 +61,30 @@ onAuthStateChanged(auth, user => {
   // Hide loading screen once auth state is known
   const ls = document.getElementById('loadingScreen');
   if (ls) { ls.classList.add('hide'); setTimeout(() => ls.remove(), 700); }
+
+  // Corrige bug: openTab pode ter sido chamado antes do auth resolver.
+  // Após o auth estar pronto, recarrega a aba ativa se ela depende de login.
+  if (user) {
+    setTimeout(() => {
+      const activeTab = Object.keys(TAB_BTNS).find(k => {
+        const btn = document.getElementById(TAB_BTNS[k]);
+        return btn && btn.classList.contains('active');
+      });
+      if (activeTab === 'history') {
+        window._loadHistory && window._loadHistory();
+      } else if (activeTab === 'gifts') {
+        window._loadAllUsers && window._loadAllUsers();
+        window._loadGifts && window._loadGifts();
+        window._loadMessages && window._loadMessages();
+      } else if (activeTab === 'records') {
+        window._loadPersonalRecords && window._loadPersonalRecords();
+      } else if (activeTab === 'leaderboard') {
+        window._loadLeaderboard && window._loadLeaderboard();
+      } else if (activeTab === 'daily') {
+        window.renderDailyTab && window.renderDailyTab();
+      }
+    }, 300);
+  }
 });
 
 async function setOnlinePresence(uid, online) {
@@ -867,6 +891,29 @@ audio{display:none}
   .duel-pairs-count{font-size:1.1rem}
   .duel-vs{font-size:1rem}
 }
+/* ===== DESAFIO DIÁRIO ===== */
+.daily-countdown-wrap{text-align:center;margin:0.6rem 0 1rem;padding:0.6rem;background:linear-gradient(135deg,rgba(233,30,140,0.07),rgba(167,139,250,0.07));border-radius:16px;border:1px solid var(--border)}
+.daily-countdown-label{font-size:0.75rem;color:var(--text2);font-weight:700;letter-spacing:0.04em;margin-bottom:0.2rem}
+.daily-countdown{font-size:1.8rem;font-weight:800;font-family:'Nunito',sans-serif;background:linear-gradient(135deg,var(--pink-deep),var(--lilac));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;letter-spacing:0.05em}
+.daily-result-card{text-align:center;padding:1.2rem 1rem;background:linear-gradient(135deg,rgba(233,30,140,0.06),rgba(167,139,250,0.06));border-radius:20px;border:2px solid var(--border);margin-bottom:1rem}
+.daily-result-emoji{font-size:2.5rem;margin-bottom:0.3rem}
+.daily-result-title{font-size:1.1rem;font-weight:800;color:var(--pink-deep);margin-bottom:0.5rem}
+.daily-result-stats{font-size:0.9rem;color:var(--text2);line-height:1.8;margin-bottom:0.8rem}
+.daily-result-stats strong{color:var(--text);font-weight:800}
+.daily-share-btn{background:linear-gradient(135deg,#25D366,#128C7E);font-size:0.9rem;padding:0.5rem 1.4rem}
+.daily-share-btn:hover{opacity:0.88}
+.daily-playing-hud{display:flex;justify-content:center;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.8rem}
+.daily-leaderboard-wrap{margin-top:1.2rem;border-top:1px solid var(--border);padding-top:1rem}
+.daily-lb-title{font-size:0.95rem;font-weight:800;color:var(--pink-deep);margin-bottom:0.6rem;text-align:center}
+.daily-lb-row{display:flex;align-items:center;gap:0.6rem;padding:0.45rem 0.6rem;border-radius:12px;font-size:0.82rem;font-weight:700;transition:background 0.15s}
+.daily-lb-row:hover{background:var(--pink-light)}
+.daily-lb-row.me{background:linear-gradient(135deg,rgba(233,30,140,0.1),rgba(167,139,250,0.1));border:1px solid var(--border)}
+.daily-lb-rank{min-width:1.4rem;font-size:0.85rem;font-weight:800;text-align:center}
+.daily-lb-avatar{font-size:1.2rem;line-height:1}
+.daily-lb-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.daily-lb-time{color:var(--text2);font-size:0.78rem}
+.daily-lb-score{color:var(--pink-deep);font-weight:800;min-width:3.5rem;text-align:right}
+
 </style>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#f48fb1">
@@ -951,6 +998,8 @@ audio{display:none}
     <button class="tab" onclick="openTab('profile')" id="tabProfile">👤 Perfil</button>
     <button class="tab" onclick="openTab('gifts')" id="tabGifts">💌 Social</button>
     <button class="tab" onclick="openTab('shop')" id="tabShop">🛍️ Loja</button>
+    <button class="tab" onclick="openTab('inventory')" id="tabInventory">🎒 Inventário</button>
+    <button class="tab" onclick="openTab('daily')" id="tabDaily">📅 Diário</button>
     <button class="tab" onclick="openTab('duel')" id="tabDuel" style="display:none">⚔️ Duelo</button>
   </div>
   <!-- POWER HUD -->
@@ -1017,6 +1066,14 @@ audio{display:none}
     </div>
   </div>
 
+  <!-- INVENTÁRIO VIEW -->
+  <div id="viewInventory" style="display:none;margin-top:1rem">
+    <div class="panel">
+      <h3>🎒 Meu Inventário</h3>
+      <div id="inventoryContent"><p class="no-login-msg">Faça login para ver seu inventário! 🌸</p></div>
+    </div>
+  </div>
+
   <!-- DUEL BOARD VIEW -->
   <div id="viewDuel" style="display:none;margin-top:1rem">
     <div class="duel-arena">
@@ -1059,11 +1116,75 @@ audio{display:none}
       <!-- Status texto -->
       <div id="duelStatusBar" class="duel-status-bar">⚔️ Duelo em andamento!</div>
 
+      <!-- Poderes disponíveis no duelo -->
+      <div id="duelPowerHUD" style="display:flex;justify-content:center;gap:0.5rem;margin:0.4rem 0;flex-wrap:wrap"></div>
+
       <!-- Tabuleiro do duelo (shared seed) -->
       <div class="board" id="duelBoard"></div>
 
     </div>
   </div>
+
+  <!-- DESAFIO DIÁRIO VIEW -->
+  <div id="viewDaily" style="display:none;margin-top:1rem">
+    <div class="panel">
+      <h3>📅 Desafio Diário</h3>
+      <p style="text-align:center;font-size:0.8rem;color:var(--text2);margin-bottom:0.5rem">Um tabuleiro novo a cada dia · Sem poderes · Top 10 do dia</p>
+
+      <!-- Contador regressivo até meia-noite -->
+      <div class="daily-countdown-wrap">
+        <div class="daily-countdown-label">⏰ Próximo desafio em</div>
+        <div id="dailyCountdown" class="daily-countdown">00:00:00</div>
+      </div>
+
+      <!-- Estado: não logado -->
+      <div id="dailyNoLogin" style="display:none">
+        <p class="no-login-msg">Faça login para participar do Desafio Diário! 🌸</p>
+      </div>
+
+      <!-- Estado: já jogou hoje -->
+      <div id="dailyAlreadyPlayed" style="display:none">
+        <div class="daily-result-card">
+          <div class="daily-result-emoji">✅</div>
+          <div class="daily-result-title">Você já jogou hoje!</div>
+          <div id="dailyMyResult" class="daily-result-stats"></div>
+          <button class="btn daily-share-btn" id="dailyShareBtn" onclick="shareDailyResult()">
+            💬 Compartilhar no WhatsApp
+          </button>
+        </div>
+      </div>
+
+      <!-- Estado: pode jogar -->
+      <div id="dailyCanPlay" style="display:none">
+        <div style="text-align:center;margin-bottom:1rem">
+          <div style="font-size:2rem;margin-bottom:0.3rem">🎯</div>
+          <p style="font-size:0.9rem;color:var(--text2)">Tabuleiro único do dia para todos os jogadores.<br>Você tem <strong>1 tentativa</strong> — boa sorte!</p>
+          <button class="btn" style="margin-top:0.8rem;font-size:1rem;padding:0.6rem 2rem" onclick="startDailyChallenge()">
+            🚀 Começar Desafio!
+          </button>
+        </div>
+      </div>
+
+      <!-- Estado: jogando -->
+      <div id="dailyPlaying" style="display:none">
+        <div class="daily-playing-hud">
+          <div class="stat-pill">⏱️ <strong id="dailyTimer">0s</strong></div>
+          <div class="stat-pill">💖 Pares: <strong id="dailyPairs">0</strong>/10</div>
+          <div class="stat-pill">🔄 Movimentos: <strong id="dailyMoves">0</strong></div>
+        </div>
+        <div class="board" id="dailyBoard"></div>
+      </div>
+
+      <!-- Placar do dia -->
+      <div class="daily-leaderboard-wrap">
+        <div class="daily-lb-title">🏅 Top 10 de Hoje</div>
+        <div id="dailyLbContent">
+          <p style="text-align:center;color:var(--text2);font-size:0.85rem">Carregando...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </main>
 
 <!-- DUEL RESULT OVERLAY -->
@@ -1335,25 +1456,72 @@ function buyItem(id){
   renderPowerHUD();
 }
 
+function renderInventory(){
+  const el=document.getElementById('inventoryContent'); if(!el) return;
+  if(!window._currentUser){ el.innerHTML='<p class="no-login-msg">Faça login para ver seu inventário! 🌸</p>'; return; }
+  const inv=getInventory();
+  const coins=getCoins();
+  const owned=SHOP_ITEMS.filter(item=>(inv[item.id]||0)>0);
+
+  let html=`<div style="text-align:center;margin-bottom:1.2rem">
+    <div style="font-size:1.4rem;font-weight:800;color:var(--pink-deep)">🪙 ${coins} moedas disponíveis</div>
+  </div>`;
+
+  if(owned.length===0){
+    html+=`<div style="text-align:center;padding:2rem 0">
+      <div style="font-size:3rem;margin-bottom:0.6rem">🎒</div>
+      <p style="color:var(--text2);font-size:0.9rem;margin-bottom:1rem">Seu inventário está vazio!<br>Compre poderes na loja para usar nas partidas.</p>
+      <button class="btn" style="font-size:0.9rem;padding:0.5rem 1.5rem" onclick="openTab('shop')">🛍️ Ir para a Loja</button>
+    </div>`;
+  } else {
+    html+=`<div class="shop-grid">
+      ${owned.map(item=>{
+        const qty=inv[item.id];
+        const isDuel=item.modes.length===1&&item.modes[0]==='duel';
+        return `<div class="shop-card${isDuel?' duel-item':''}">
+          <div class="shop-icon">${item.icon}</div>
+          <div class="shop-name">${item.name}${isDuel?'<span class="duel-badge">⚔️ Duelo</span>':''}</div>
+          <div class="shop-desc">${item.desc}</div>
+          <div style="font-size:1.5rem;font-weight:800;color:var(--pink-deep);margin:0.4rem 0">${qty}x</div>
+          <div style="font-size:0.72rem;color:var(--text2)">no inventário</div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div style="text-align:center;margin-top:1rem">
+      <button class="btn" style="font-size:0.85rem;padding:0.45rem 1.4rem;background:linear-gradient(135deg,var(--lilac),var(--pink))" onclick="openTab('shop')">🛍️ Comprar mais poderes</button>
+    </div>`;
+  }
+
+  // Itens que o jogador ainda não tem
+  const missing=SHOP_ITEMS.filter(item=>(inv[item.id]||0)===0);
+  if(missing.length>0){
+    html+=`<div style="margin-top:1.4rem">
+      <p style="font-size:0.8rem;font-weight:700;color:var(--text2);text-align:center;margin-bottom:0.6rem">— Poderes que você ainda não tem —</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.5rem;justify-content:center">
+        ${missing.map(item=>`
+          <div style="display:flex;align-items:center;gap:0.4rem;background:var(--card-bg);border:1.5px dashed var(--border);border-radius:12px;padding:0.4rem 0.8rem;opacity:0.6">
+            <span style="font-size:1.2rem">${item.icon}</span>
+            <span style="font-size:0.8rem;color:var(--text2)">${item.name}</span>
+            <span style="font-size:0.75rem;color:var(--pink-deep);font-weight:700">🪙${item.price}</span>
+          </div>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  el.innerHTML=html;
+}
+
 function renderPowerHUD(){
   const el=document.getElementById('powerHUD'); if(!el) return;
   const inv=getInventory();
   const inGame=timerStarted;
   const inDuel=!!_duelState && !_duelFinished;
+
+  // HUD do jogo normal (sem poderes exclusivos de duelo)
   el.innerHTML=SHOP_ITEMS.map(item=>{
     const qty=inv[item.id]||0;
     const isDuelOnly=item.modes.length===1&&item.modes[0]==='duel';
-    if(isDuelOnly){
-      // Mostrar só no duelo
-      if(!inDuel) return '';
-      const canUse=qty>0&&inDuel;
-      return `<button class="power-btn duel-power${canUse?'':' muted'}"
-        onclick="usePower('${item.id}')"
-        title="${item.name}: ${item.desc}"
-        ${canUse?'':' disabled'}>
-        ${item.icon} <span class="power-qty">${qty}</span>
-      </button>`;
-    }
+    if(isDuelOnly) return '';
     const modeOk=item.modes.includes(gameMode);
     const active=activePowers[item.id];
     const canUse=qty>0&&modeOk&&inGame&&!active;
@@ -1364,22 +1532,43 @@ function renderPowerHUD(){
       ${item.icon} <span class="power-qty">${qty}</span>
     </button>`;
   }).join('');
+
+  // HUD do duelo (todos exceto freeze)
+  const duelEl=document.getElementById('duelPowerHUD');
+  if(duelEl){
+    const duelItems=SHOP_ITEMS.filter(item=>item.id!=='freeze');
+    duelEl.innerHTML=duelItems.map(item=>{
+      const qty=inv[item.id]||0;
+      const canUse=qty>0&&inDuel;
+      return `<button class="power-btn duel-power${canUse?'':' muted'}"
+        onclick="usePower('${item.id}')"
+        title="${item.name}: ${item.desc}"
+        ${canUse?'':' disabled'}>
+        ${item.icon} <span class="power-qty">${qty}</span>
+      </button>`;
+    }).join('');
+  }
 }
 
 function usePower(id){
-  if(!timerStarted){ showToast('Inicie o jogo primeiro! 🎮',true); return; }
+  const inDuel=!!_duelState&&!_duelFinished;
+  if(!inDuel && !timerStarted){ showToast('Inicie o jogo primeiro! 🎮',true); return; }
   const item=SHOP_ITEMS.find(i=>i.id===id); if(!item) return;
-  if(!item.modes.includes(gameMode)){ showToast(`${item.icon} Só disponível no modo ${item.modes.join('/')}!`,true); return; }
+  // No duelo, bloquear só freeze (não se aplica ao duelo)
+  if(!inDuel && !item.modes.includes(gameMode)){ showToast(`${item.icon} Só disponível no modo ${item.modes.join('/')}!`,true); return; }
+  if(id==='freeze'&&inDuel){ showToast('❄️ Freeze não disponível no duelo!',true); return; }
   if(getItemCount(id)<=0){ showToast('Sem estoque! Compre na loja 🛍️',true); return; }
   if(!useItem(id)){ return; }
 
   if(id==='revealer'){
-    // Revela todas as cartas por 2s
-    document.querySelectorAll('.card:not(.matched)').forEach(c=>c.classList.add('flipped'));
+    // Revela todas as cartas por 2s (no duelo, usa o duelBoard)
+    const boardSel=inDuel?'#duelBoard .card:not(.matched)':'.card:not(.matched)';
+    document.querySelectorAll(boardSel).forEach(c=>c.classList.add('flipped'));
     showToast('🔍 Cartas reveladas por 2s!');
     setTimeout(()=>{
-      document.querySelectorAll('.card:not(.matched)').forEach(c=>{
-        if(!flipped.find(f=>f.el===c)) c.classList.remove('flipped');
+      document.querySelectorAll(boardSel).forEach(c=>{
+        if(inDuel){ if(!_duelFlipped.find(f=>f.el===c)) c.classList.remove('flipped'); }
+        else{ if(!flipped.find(f=>f.el===c)) c.classList.remove('flipped'); }
       });
     },2000);
   } else if(id==='freeze'){
@@ -2060,8 +2249,8 @@ function handlePhotoUpload(event) {
 }
 
 // ── TABS ──────────────────────────────────────────────
-const TAB_VIEWS={game:'viewGame',leaderboard:'viewLeaderboard',records:'viewRecords',history:'viewHistory',achievements:'viewAchievements',profile:'viewProfile',gifts:'viewGifts',shop:'viewShop',duel:'viewDuel'};
-const TAB_BTNS={game:'tabGame',leaderboard:'tabLb',records:'tabRec',history:'tabHist',achievements:'tabAch',profile:'tabProfile',gifts:'tabGifts',shop:'tabShop',duel:'tabDuel'};
+const TAB_VIEWS={game:'viewGame',leaderboard:'viewLeaderboard',records:'viewRecords',history:'viewHistory',achievements:'viewAchievements',profile:'viewProfile',gifts:'viewGifts',shop:'viewShop',inventory:'viewInventory',daily:'viewDaily',duel:'viewDuel'};
+const TAB_BTNS={game:'tabGame',leaderboard:'tabLb',records:'tabRec',history:'tabHist',achievements:'tabAch',profile:'tabProfile',gifts:'tabGifts',shop:'tabShop',inventory:'tabInventory',daily:'tabDaily',duel:'tabDuel'};
 
 function openTab(tab) {
   Object.keys(TAB_VIEWS).forEach(k => {
@@ -2070,7 +2259,7 @@ function openTab(tab) {
   });
 
   if (!window._currentUser) {
-    // Só mostrar aviso na aba que está sendo aberta, não em todas
+    // Só mostrar aviso se o conteúdo ainda não foi carregado (evita sobrescrever dados reais)
     const tabContentMap = {
       leaderboard: ['lbContent'],
       records:     ['recordsContent'],
@@ -2081,7 +2270,10 @@ function openTab(tab) {
     const ids = tabContentMap[tab] || [];
     ids.forEach(id => {
       const el = document.getElementById(id);
-      if (el) el.innerHTML = '<p class="no-login-msg">Faça login para ver esta seção! 🌸</p>';
+      // Só exibe aviso se o elemento estiver vazio ou com o placeholder padrão
+      if (el && (el.children.length === 0 || el.querySelector('.no-login-msg'))) {
+        el.innerHTML = '<p class="no-login-msg">Faça login para ver esta seção! 🌸</p>';
+      }
     });
     return; // não tenta carregar dados sem login
   }
@@ -2092,6 +2284,7 @@ function openTab(tab) {
   if (tab==='achievements') renderAchievements();
   if (tab==='profile')     renderProfile();
   if (tab==='shop')        renderShop();
+  if (tab==='inventory')   renderInventory();
   if (tab==='gifts') {
     window._loadAllUsers && window._loadAllUsers();
     window._loadGifts && window._loadGifts();
@@ -2099,6 +2292,7 @@ function openTab(tab) {
     window.markGiftsRead && window.markGiftsRead();
     window.markMessagesRead && window.markMessagesRead();
   }
+  if (tab==='daily') renderDailyTab();
 }
 
 // ── SOCIAL TABS ───────────────────────────────────────
@@ -2416,6 +2610,9 @@ window.startDuelBoard = function(duel) {
 
   // Preencher HUD
   _updateDuelHUD();
+
+  // Renderizar poderes disponíveis no duelo
+  renderPowerHUD();
 
   // Renderizar tabuleiro
   _renderDuelBoard();
@@ -2852,6 +3049,337 @@ window._duelClearAction = async function(duelId) {
     await updateDoc(doc(db, 'duels', duelId), { pendingAction: null });
   } catch(e) {}
 };
+
+// ══════════════════════════════════════════════════════
+//  DESAFIO DIÁRIO
+// ══════════════════════════════════════════════════════
+
+// ── Helpers de data ───────────────────────────────────
+function getDailyDateKey() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}${m}${d}`; // ex: "20250614"
+}
+
+function getDailySeed() {
+  return parseInt(getDailyDateKey(), 10); // seed numérica baseada na data
+}
+
+// ── Estado interno do daily ──────────────────────────
+let _dailyState = {
+  playing: false,
+  cards: [],
+  flipped: [],
+  matched: [],
+  locked: false,
+  moves: 0,
+  pairs: 0,
+  startTime: null,
+  timerInterval: null,
+  elapsed: 0,
+  myResult: null, // resultado já submetido hoje
+};
+let _dailyCountdownInterval = null;
+let _unsubDailyLb = null;
+
+// ── Contador regressivo até meia-noite ───────────────
+function startDailyCountdown() {
+  if (_dailyCountdownInterval) clearInterval(_dailyCountdownInterval);
+  function tick() {
+    const now = new Date();
+    const midnight = new Date();
+    midnight.setHours(24, 0, 0, 0);
+    const diff = Math.max(0, midnight - now);
+    const h = String(Math.floor(diff / 3600000)).padStart(2, '0');
+    const m = String(Math.floor((diff % 3600000) / 60000)).padStart(2, '0');
+    const s = String(Math.floor((diff % 60000) / 1000)).padStart(2, '0');
+    const el = document.getElementById('dailyCountdown');
+    if (el) el.textContent = `${h}:${m}:${s}`;
+  }
+  tick();
+  _dailyCountdownInterval = setInterval(tick, 1000);
+}
+
+// ── Verificar se já jogou hoje (Firestore) ───────────
+async function checkDailyPlayed(uid) {
+  const dateKey = getDailyDateKey();
+  try {
+    const docRef = doc(db, 'daily_scores', `${uid}_${dateKey}`);
+    const snap = await getDoc(docRef);
+    if (snap.exists()) return snap.data();
+  } catch(e) {}
+  return null;
+}
+
+// ── Renderizar estado da aba daily ───────────────────
+async function renderDailyTab() {
+  const user = window._currentUser;
+
+  // Iniciar contador sempre
+  startDailyCountdown();
+
+  // Carregar placar do dia (sempre visível)
+  loadDailyLeaderboard();
+
+  // Esconder todos os estados
+  ['dailyNoLogin','dailyAlreadyPlayed','dailyCanPlay','dailyPlaying'].forEach(id => {
+    document.getElementById(id).style.display = 'none';
+  });
+
+  if (!user) {
+    document.getElementById('dailyNoLogin').style.display = 'block';
+    return;
+  }
+
+  // Se está jogando agora, manter a tela de jogo
+  if (_dailyState.playing) {
+    document.getElementById('dailyPlaying').style.display = 'block';
+    return;
+  }
+
+  const result = await checkDailyPlayed(user.uid);
+  if (result) {
+    _dailyState.myResult = result;
+    showDailyAlreadyPlayed(result);
+  } else {
+    document.getElementById('dailyCanPlay').style.display = 'block';
+  }
+}
+
+function showDailyAlreadyPlayed(result) {
+  document.getElementById('dailyAlreadyPlayed').style.display = 'block';
+  const pos = result.position ? `#${result.position}` : '';
+  document.getElementById('dailyMyResult').innerHTML =
+    `⏱️ Tempo: <strong>${result.time}s</strong>&nbsp;&nbsp;` +
+    `🔄 Movimentos: <strong>${result.moves}</strong>&nbsp;&nbsp;` +
+    `⭐ Pontos: <strong>${result.score}</strong>` +
+    (pos ? `<br>🏅 Posição no dia: <strong>${pos}</strong>` : '');
+}
+
+// ── Iniciar partida diária ────────────────────────────
+window.startDailyChallenge = function() {
+  const user = window._currentUser;
+  if (!user) { showToast('Faça login primeiro! 🌸'); return; }
+
+  const seed = getDailySeed();
+  const pool = CARDS_NORMAL;
+  const paired = [...pool, ...pool].map((c, i) => ({ ...c, uid: i }));
+  const shuffled = shuffleSeeded(paired, seed);
+
+  _dailyState = {
+    playing: true,
+    cards: shuffled,
+    flipped: [],
+    matched: [],
+    locked: false,
+    moves: 0,
+    pairs: 0,
+    startTime: Date.now(),
+    timerInterval: null,
+    elapsed: 0,
+    myResult: null,
+  };
+
+  // Mostrar tela de jogo
+  ['dailyNoLogin','dailyAlreadyPlayed','dailyCanPlay'].forEach(id => {
+    document.getElementById(id).style.display = 'none';
+  });
+  document.getElementById('dailyPlaying').style.display = 'block';
+
+  renderDailyBoard();
+  startDailyTimer();
+};
+
+// ── Timer da partida diária ───────────────────────────
+function startDailyTimer() {
+  if (_dailyState.timerInterval) clearInterval(_dailyState.timerInterval);
+  _dailyState.timerInterval = setInterval(() => {
+    if (!_dailyState.playing) { clearInterval(_dailyState.timerInterval); return; }
+    _dailyState.elapsed = Math.floor((Date.now() - _dailyState.startTime) / 1000);
+    const el = document.getElementById('dailyTimer');
+    if (el) el.textContent = _dailyState.elapsed + 's';
+  }, 500);
+}
+
+// ── Renderizar tabuleiro ──────────────────────────────
+function renderDailyBoard() {
+  const board = document.getElementById('dailyBoard');
+  if (!board) return;
+  board.innerHTML = '';
+  board.className = 'board'; // modo normal (5 colunas)
+
+  _dailyState.cards.forEach((card, idx) => {
+    const div = document.createElement('div');
+    div.className = 'card' + (_dailyState.matched.includes(idx) ? ' matched' : '');
+    div.innerHTML = `
+      <div class="card-inner">
+        <div class="card-back">🌸</div>
+        <div class="card-front">${card.emoji}</div>
+      </div>`;
+    div.addEventListener('click', () => onDailyCardClick(idx));
+    board.appendChild(div);
+  });
+}
+
+// ── Clique em carta diária ────────────────────────────
+function onDailyCardClick(idx) {
+  const st = _dailyState;
+  if (!st.playing || st.locked) return;
+  if (st.matched.includes(idx)) return;
+  if (st.flipped.includes(idx)) return;
+  if (st.flipped.length >= 2) return;
+
+  st.flipped.push(idx);
+  flipDailyCard(idx, true);
+
+  if (st.flipped.length === 2) {
+    st.moves++;
+    document.getElementById('dailyMoves').textContent = st.moves;
+    st.locked = true;
+
+    const [a, b] = st.flipped;
+    if (st.cards[a].emoji === st.cards[b].emoji) {
+      // Par encontrado
+      st.matched.push(a, b);
+      st.pairs++;
+      st.flipped = [];
+      st.locked = false;
+      document.getElementById('dailyPairs').textContent = st.pairs;
+
+      // Marcar visualmente
+      const boardEl = document.getElementById('dailyBoard');
+      if (boardEl) {
+        boardEl.children[a].classList.add('matched');
+        boardEl.children[b].classList.add('matched');
+      }
+
+      if (st.pairs === 10) {
+        finishDailyGame();
+      }
+    } else {
+      // Par errado — virar de volta
+      setTimeout(() => {
+        flipDailyCard(a, false);
+        flipDailyCard(b, false);
+        st.flipped = [];
+        st.locked = false;
+      }, 900);
+    }
+  }
+}
+
+function flipDailyCard(idx, show) {
+  const boardEl = document.getElementById('dailyBoard');
+  if (!boardEl) return;
+  const card = boardEl.children[idx];
+  if (card) card.classList.toggle('flipped', show);
+}
+
+// ── Finalizar e salvar no Firestore ──────────────────
+async function finishDailyGame() {
+  const st = _dailyState;
+  st.playing = false;
+  clearInterval(st.timerInterval);
+
+  const elapsed = Math.floor((Date.now() - st.startTime) / 1000);
+  const score = Math.max(0, 5000 - elapsed * 10 - st.moves * 5);
+  const user = window._currentUser;
+  const dateKey = getDailyDateKey();
+  const avatar = localStorage.getItem('selectedAvatar') || user.photoURL || '🌸';
+  const name = user.displayName || user.email.split('@')[0];
+
+  const resultData = {
+    uid: user.uid,
+    name,
+    avatar,
+    date: dateKey,
+    time: elapsed,
+    score,
+    moves: st.moves,
+    createdAt: serverTimestamp(),
+  };
+
+  // Salvar no Firestore
+  try {
+    await setDoc(doc(db, 'daily_scores', `${user.uid}_${dateKey}`), resultData);
+  } catch(e) { console.error('daily save error', e); }
+
+  // Atualizar UI
+  st.myResult = { ...resultData, time: elapsed };
+  document.getElementById('dailyPlaying').style.display = 'none';
+  showDailyAlreadyPlayed(st.myResult);
+  loadDailyLeaderboard();
+
+  showToast(`🎉 Desafio concluído! ${elapsed}s · ${score} pts`);
+}
+
+// ── Placar do dia (Top 10) ────────────────────────────
+async function loadDailyLeaderboard() {
+  const dateKey = getDailyDateKey();
+  const container = document.getElementById('dailyLbContent');
+  if (!container) return;
+
+  try {
+    const q = query(
+      collection(db, 'daily_scores'),
+      where('date', '==', dateKey),
+      orderBy('score', 'desc'),
+      limit(10)
+    );
+    const snap = await getDocs(q);
+    const entries = [];
+    snap.forEach(d => entries.push(d.data()));
+
+    if (entries.length === 0) {
+      container.innerHTML = '<p style="text-align:center;color:var(--text2);font-size:0.85rem">Ninguém jogou ainda hoje. Seja o primeiro! 🌸</p>';
+      return;
+    }
+
+    const user = window._currentUser;
+    container.innerHTML = entries.map((e, i) => {
+      const isMe = user && e.uid === user.uid;
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}º`;
+      return `<div class="daily-lb-row${isMe ? ' me' : ''}">
+        <span class="daily-lb-rank">${medal}</span>
+        <span class="daily-lb-avatar">${e.avatar || '🌸'}</span>
+        <span class="daily-lb-name">${e.name || 'Jogadora'}</span>
+        <span class="daily-lb-time">${e.time}s · ${e.moves}mov</span>
+        <span class="daily-lb-score">⭐ ${e.score}</span>
+      </div>`;
+    }).join('');
+
+    // Atualizar posição no resultado pessoal se disponível
+    if (user && _dailyState.myResult) {
+      const pos = entries.findIndex(e => e.uid === user.uid);
+      if (pos >= 0) _dailyState.myResult.position = pos + 1;
+    }
+
+  } catch(e) {
+    container.innerHTML = '<p style="text-align:center;color:var(--text2);font-size:0.85rem">Erro ao carregar placar.</p>';
+    console.error('daily lb error', e);
+  }
+}
+
+// ── Compartilhar no WhatsApp ──────────────────────────
+window.shareDailyResult = function() {
+  const r = _dailyState.myResult;
+  if (!r) return;
+  const dateKey = getDailyDateKey();
+  const formatted = `${dateKey.slice(0,4)}-${dateKey.slice(4,6)}-${dateKey.slice(6,8)}`;
+  const pos = r.position ? ` · 🏅 #${r.position} no ranking` : '';
+  const text = encodeURIComponent(
+    `🌸 Jogo da Memória — Desafio Diário ${formatted}\n` +
+    `⏱️ ${r.time}s · 🔄 ${r.moves} movimentos · ⭐ ${r.score} pts${pos}\n` +
+    `Tente você também! 💌`
+  );
+  window.open(`https://wa.me/?text=${text}`, '_blank');
+};
+
+// ── Hook na openTab ───────────────────────────────────
+// renderDailyTab() é chamado via openTab('daily') — ver função openTab acima
+
 </script>
 </body>
 </html>
