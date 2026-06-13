@@ -10,7 +10,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged, updateProfile } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import { getFirestore, doc, setDoc, getDoc, collection, getDocs, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import { getMessaging, getToken, onMessage } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js";
+// FCM importado dinamicamente em initFCM() para não bloquear no Chrome
 
 const firebaseConfig = {
   apiKey: "AIzaSyATJAen6Qtzm-uOqHtD6ubQUDmVdqG1BUM",
@@ -24,8 +24,7 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const googleProvider = new GoogleAuthProvider();
-let messaging = null;
-try { messaging = getMessaging(app); } catch(e) { console.warn('FCM não suportado neste browser', e); }
+// messaging inicializado dinamicamente dentro de initFCM()
 
 let unsubNotif = null;
 
@@ -33,13 +32,21 @@ onAuthStateChanged(auth, user => {
   window._currentUser = user;
   updateAuthUI(user);
   if (user) {
-    window._loadLeaderboard && window._loadLeaderboard();
-    window._loadPersonalRecords && window._loadPersonalRecords();
-    window._loadHistory && window._loadHistory();
-    window._loadAllUsers && window._loadAllUsers();
+    // Aguardar todos os scripts carregarem antes de chamar funções de render
+    // Resolve race condition entre o módulo Firebase e os scripts inline
+    function _runAfterScripts(fn) {
+      if (document.readyState === 'complete') { setTimeout(fn, 50); }
+      else { window.addEventListener('load', () => setTimeout(fn, 50), { once: true }); }
+    }
+    _runAfterScripts(() => {
+      window._loadLeaderboard && window._loadLeaderboard();
+      window._loadPersonalRecords && window._loadPersonalRecords();
+      window._loadHistory && window._loadHistory();
+      window._loadAllUsers && window._loadAllUsers();
+    });
     startNotifListener(user.uid);
-    // Inicializar FCM push (só se PWA instalado ou permissão já concedida)
-    if (Notification && Notification.permission === 'granted') { initFCM(user.uid); }
+    // Inicializar FCM push (só se permissão já concedida)
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') { initFCM(user.uid); }
     // Set online presence
     setOnlinePresence(user.uid, true);
     // Duel challenge listener
@@ -71,7 +78,12 @@ onAuthStateChanged(auth, user => {
   // Corrige bug: openTab pode ter sido chamado antes do auth resolver.
   // Após o auth estar pronto, recarrega a aba ativa se ela depende de login.
   if (user) {
-    setTimeout(() => {
+    // Recarregar aba ativa após auth + scripts estarem prontos
+    function _runAfterScripts2(fn) {
+      if (document.readyState === 'complete') { setTimeout(fn, 150); }
+      else { window.addEventListener('load', () => setTimeout(fn, 150), { once: true }); }
+    }
+    _runAfterScripts2(() => {
       const activeTab = Object.keys(TAB_BTNS).find(k => {
         const btn = document.getElementById(TAB_BTNS[k]);
         return btn && btn.classList.contains('active');
@@ -89,7 +101,7 @@ onAuthStateChanged(auth, user => {
       } else if (activeTab === 'daily') {
         window.renderDailyTab && window.renderDailyTab();
       }
-    }, 300);
+    });
   }
 });
 
@@ -329,14 +341,16 @@ function startNotifListener(uid) {
 const FCM_VAPID_KEY = 'SUA_VAPID_KEY_AQUI'; // ⚠️ substitua pela sua VAPID key
 
 async function initFCM(uid) {
-  if (!messaging) return;
   if (!('Notification' in window)) return;
   if (!('serviceWorker' in navigator)) return;
   try {
+    // Import dinâmico — não bloqueia o módulo principal no Chrome
+    const { getMessaging, getToken, onMessage } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js");
+    const _messaging = getMessaging(app);
     const swReg = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') return;
-    const token = await getToken(messaging, {
+    const token = await getToken(_messaging, {
       vapidKey: FCM_VAPID_KEY,
       serviceWorkerRegistration: swReg
     });
@@ -344,7 +358,7 @@ async function initFCM(uid) {
     await setDoc(doc(db, 'fcm_tokens', uid), {
       token, uid, updatedAt: serverTimestamp()
     }, { merge: true });
-    onMessage(messaging, payload => {
+    onMessage(_messaging, payload => {
       const n = payload.notification || {};
       const title = n.title || '🌸 Jogo da Memória';
       const body  = n.body  || 'Nova notificação!';
@@ -2469,14 +2483,6 @@ function openTab(tab) {
     });
     return; // não tenta carregar dados sem login
   }
-  // Usuário logado mas auth pode ter chegado depois do openTab — sempre recarregar ao abrir aba
-  if (tab==='history')     { window._loadHistory && window._loadHistory(); }
-  if (tab==='gifts')       {
-    window._loadAllUsers && window._loadAllUsers();
-    window._loadGifts && window._loadGifts();
-    window._loadMessages && window._loadMessages();
-  }
-
   if (tab==='leaderboard') window._loadLeaderboard && window._loadLeaderboard();
   if (tab==='records')     window._loadPersonalRecords && window._loadPersonalRecords();
   if (tab==='history')     window._loadHistory && window._loadHistory();
