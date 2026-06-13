@@ -42,7 +42,13 @@ onAuthStateChanged(auth, user => {
     // Load coins and inventory from Firestore (overrides localStorage)
     window._loadCoinsFromFirestore && window._loadCoinsFromFirestore(user.uid).then(({ coins, inventory }) => {
       if (coins !== null) {
+        // Usuário existente — carregar do Firestore
         localStorage.setItem('coins_' + user.uid, String(coins));
+      } else {
+        // Novo usuário — começar com 500 moedas
+        localStorage.setItem('coins_' + user.uid, '500');
+        window._syncCoinsToFirestore && window._syncCoinsToFirestore(user.uid, 500, {});
+        window.showToast && window.showToast('🎉 Bem-vinda! Você ganhou 500 moedas de boas-vindas! 🪙');
       }
       if (inventory !== null) {
         localStorage.setItem('inventory_' + user.uid, JSON.stringify(inventory));
@@ -307,20 +313,25 @@ window.sendDuelChallenge = async function(toUid, toName, bet) {
 
 window.respondDuel = async function(duelId, accept) {
   const user = window._currentUser; if (!user) return;
+  const av = localStorage.getItem('selectedAvatar') || '🌸';
   await updateDoc(doc(db, 'duels', duelId), {
     status: accept ? 'accepted' : 'declined',
+    player2Avatar: av,
     respondedAt: serverTimestamp()
   });
   if (accept) {
-    window.showToast('⚔️ Duelo aceito! Em breve o tabuleiro abrirá...');
+    window.showToast('⚔️ Duelo aceito! Preparando tabuleiro...');
   } else {
     window.showToast('Desafio recusado.');
   }
 };
 
 let _unsubDuels = null;
+let _unsubDuelAccepted = null;
+
 window._startDuelListener = function(uid) {
   if (_unsubDuels) { _unsubDuels(); }
+  // Ouvir desafios recebidos (pending)
   const q = query(collection(db, 'duels'),
     where('player2', '==', uid),
     where('status', '==', 'pending')
@@ -329,6 +340,36 @@ window._startDuelListener = function(uid) {
     const challenges = [];
     snap.forEach(d => challenges.push({ id: d.id, ...d.data() }));
     window._onDuelChallenge && window._onDuelChallenge(challenges);
+  });
+
+  // Ouvir duelos aceitos onde sou player1 (eu desafiei, oponente aceitou)
+  if (_unsubDuelAccepted) { _unsubDuelAccepted(); }
+  const qAcc = query(collection(db, 'duels'),
+    where('player1', '==', uid),
+    where('status', '==', 'accepted')
+  );
+  _unsubDuelAccepted = onSnapshot(qAcc, snap => {
+    snap.forEach(d => {
+      const duel = { id: d.id, ...d.data() };
+      // Só iniciar se o tabuleiro ainda não estiver aberto para este duelo
+      if (!window._duelState || window._duelState.duelId !== duel.id) {
+        window.startDuelBoard && window.startDuelBoard(duel);
+      }
+    });
+  });
+
+  // Ouvir duelos aceitos onde sou player2 (aceitei o desafio)
+  const qAcc2 = query(collection(db, 'duels'),
+    where('player2', '==', uid),
+    where('status', '==', 'accepted')
+  );
+  onSnapshot(qAcc2, snap => {
+    snap.forEach(d => {
+      const duel = { id: d.id, ...d.data() };
+      if (!window._duelState || window._duelState.duelId !== duel.id) {
+        window.startDuelBoard && window.startDuelBoard(duel);
+      }
+    });
   });
 };
 
@@ -748,6 +789,11 @@ audio{display:none}
 .shop-btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(255,193,7,0.5)}
 .shop-btn.disabled{background:var(--surface);color:var(--text2);border:2px solid var(--border);box-shadow:none;cursor:not-allowed}
 
+/* Itens exclusivos de duelo na loja */
+.shop-card.duel-item{border-color:#fca5a5;background:linear-gradient(135deg,rgba(252,165,165,0.08),rgba(206,147,216,0.08))}
+.duel-badge{display:inline-block;background:linear-gradient(135deg,#dc2626,#9333ea);color:white;border-radius:999px;font-size:0.6rem;padding:0.1rem 0.45rem;margin-left:0.3rem;font-weight:800;vertical-align:middle}
+.power-btn.duel-power{border-color:#fca5a5;background:linear-gradient(135deg,rgba(252,165,165,0.15),rgba(206,147,216,0.15))}
+
 /* POWER HUD */
 .power-btn{background:var(--surface2);border:2px solid var(--border);border-radius:12px;padding:0.4rem 0.7rem;font-size:1rem;cursor:pointer;transition:all 0.2s;position:relative;display:flex;align-items:center;gap:0.3rem}
 .power-btn:not(:disabled):hover{border-color:var(--pink-deep);transform:scale(1.08)}
@@ -755,6 +801,72 @@ audio{display:none}
 .power-btn.active{border-color:#22c55e;background:rgba(34,197,94,0.12);animation:pulseDot 1.5s infinite}
 .power-btn.muted{opacity:0.3}
 .power-qty{font-size:0.65rem;font-weight:800;color:var(--pink-deep);background:var(--pink-light);border-radius:999px;padding:0 4px;min-width:16px;text-align:center}
+
+/* ── DUEL BOARD ─────────────────────────────────────── */
+#viewDuel{margin-top:1rem}
+
+.duel-arena{max-width:860px;margin:0 auto}
+
+/* Cabeçalho dos dois jogadores */
+.duel-hud{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:0.6rem;margin-bottom:1rem;background:var(--surface);border:2px solid var(--border);border-radius:20px;padding:0.8rem 1rem;box-shadow:0 4px 18px rgba(244,143,177,0.15)}
+
+.duel-player{display:flex;flex-direction:column;align-items:center;gap:0.25rem}
+.duel-player.me{align-items:flex-start}
+.duel-player.opponent{align-items:flex-end}
+
+.duel-avatar{width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,var(--pink-deep),var(--lilac));display:flex;align-items:center;justify-content:center;font-size:1.3rem;border:3px solid var(--border);background-size:cover;background-position:center;flex-shrink:0}
+.duel-player-name{font-weight:800;font-size:0.85rem;color:var(--text);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.duel-pairs-count{font-size:1.4rem;font-weight:800;color:var(--pink-deep);font-family:'Pacifico',cursive;line-height:1}
+.duel-pairs-label{font-size:0.65rem;color:var(--text2);font-weight:700;text-transform:uppercase;letter-spacing:0.3px}
+.duel-time{font-size:0.78rem;color:var(--text2);font-weight:700}
+
+.duel-vs{font-family:'Pacifico',cursive;font-size:1.3rem;color:var(--pink-deep);text-align:center;flex-shrink:0;text-shadow:1px 1px 0 rgba(244,143,177,0.4)}
+
+/* Barra de progresso do duelo */
+.duel-progress-wrap{margin-bottom:0.8rem;background:var(--surface);border:2px solid var(--border);border-radius:14px;padding:0.6rem 1rem}
+.duel-progress-label{display:flex;justify-content:space-between;font-size:0.72rem;font-weight:800;color:var(--text2);margin-bottom:0.4rem}
+.duel-progress-track{height:10px;background:var(--surface2);border-radius:999px;overflow:hidden;position:relative}
+.duel-progress-me{height:100%;background:linear-gradient(90deg,var(--pink-deep),var(--lilac));border-radius:999px;transition:width 0.4s cubic-bezier(0.34,1.2,0.64,1);position:absolute;left:0;top:0}
+.duel-progress-opp{height:100%;background:linear-gradient(90deg,#7c3aed,#06b6d4);border-radius:999px;transition:width 0.4s cubic-bezier(0.34,1.2,0.64,1);position:absolute;right:0;top:0;transform-origin:right}
+
+/* Status do duelo */
+.duel-status-bar{text-align:center;font-size:0.82rem;font-weight:800;color:var(--pink-deep);margin-bottom:0.8rem;min-height:1.4em;animation:statusPop 0.3s cubic-bezier(0.34,1.56,0.64,1)}
+@keyframes statusPop{from{transform:scale(0.8);opacity:0}to{transform:scale(1);opacity:1}}
+
+/* Feedback flash (oponente acertou / errou) */
+.opp-feedback{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:600;pointer-events:none;font-size:2.2rem;font-weight:800;font-family:'Pacifico',cursive;text-shadow:0 4px 16px rgba(0,0,0,0.25);animation:oppFeedback 1.4s ease forwards}
+@keyframes oppFeedback{0%{opacity:0;transform:translate(-50%,-60%) scale(0.5)}20%{opacity:1;transform:translate(-50%,-50%) scale(1.15)}70%{opacity:1;transform:translate(-50%,-50%) scale(1)}100%{opacity:0;transform:translate(-50%,-40%) scale(0.9)}}
+.opp-feedback.hit{color:#22c55e}
+.opp-feedback.miss{color:#ef4444}
+
+/* Tela de resultado do duelo */
+.duel-result-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:800;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);opacity:0;pointer-events:none;transition:opacity 0.4s}
+.duel-result-overlay.show{opacity:1;pointer-events:all}
+.duel-result-box{background:var(--surface);border-radius:28px;border:3px solid var(--border);padding:2rem 1.8rem;text-align:center;max-width:340px;width:92%;box-shadow:0 16px 48px rgba(233,30,140,0.25);animation:victoryPop 0.5s cubic-bezier(0.34,1.56,0.64,1) both}
+.duel-result-emoji{font-size:4rem;display:block;margin-bottom:0.5rem}
+.duel-result-title{font-family:'Pacifico',cursive;font-size:1.8rem;color:var(--pink-deep);margin-bottom:0.4rem}
+.duel-result-title.loss{color:#7c3aed}
+.duel-result-detail{font-size:0.9rem;color:var(--text2);margin-bottom:0.4rem;font-weight:600}
+.duel-result-coins{font-size:1.1rem;font-weight:800;color:#b45309;background:linear-gradient(135deg,#ffd54f,#ffb300);border-radius:999px;padding:0.4rem 1.2rem;display:inline-block;margin:0.6rem 0;box-shadow:0 2px 8px rgba(255,193,7,0.35)}
+.duel-result-score{display:flex;justify-content:center;gap:2rem;margin:0.8rem 0}
+.duel-result-score-col{display:flex;flex-direction:column;align-items:center;gap:0.2rem}
+.duel-result-score-col span:first-child{font-size:0.7rem;font-weight:800;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px}
+.duel-result-score-col span:last-child{font-size:1.5rem;font-weight:800;color:var(--pink-deep);font-family:'Pacifico',cursive}
+.duel-result-score-col.opp span:last-child{color:#7c3aed}
+
+/* Aguardando oponente */
+.duel-waiting{text-align:center;padding:2rem 1rem}
+.duel-waiting-spinner{font-size:3rem;animation:loadingBounce 1s ease-in-out infinite;display:block;margin-bottom:0.8rem}
+.duel-waiting-text{font-family:'Pacifico',cursive;color:var(--pink-deep);font-size:1.1rem;margin-bottom:0.4rem}
+.duel-waiting-sub{font-size:0.8rem;color:var(--text2);font-weight:600}
+
+@media(max-width:520px){
+  .duel-hud{padding:0.6rem 0.7rem;gap:0.4rem}
+  .duel-avatar{width:32px;height:32px;font-size:1rem}
+  .duel-player-name{max-width:75px;font-size:0.75rem}
+  .duel-pairs-count{font-size:1.1rem}
+  .duel-vs{font-size:1rem}
+}
 </style>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#f48fb1">
@@ -774,6 +886,8 @@ audio{display:none}
 
 <audio id="victoryMusic" src="parabens.mp3" loop></audio>
 <audio id="bgMusic" src="soundtrack.mp3" loop></audio>
+<audio id="sfxMagic" src="embaralhar.mp3"></audio>
+<audio id="sfxFlashbang" src="flashbang.mp3"></audio>
 <div id="floatingDecors"></div>
 
 <!-- TOP BAR -->
@@ -837,6 +951,7 @@ audio{display:none}
     <button class="tab" onclick="openTab('profile')" id="tabProfile">👤 Perfil</button>
     <button class="tab" onclick="openTab('gifts')" id="tabGifts">💌 Social</button>
     <button class="tab" onclick="openTab('shop')" id="tabShop">🛍️ Loja</button>
+    <button class="tab" onclick="openTab('duel')" id="tabDuel" style="display:none">⚔️ Duelo</button>
   </div>
   <!-- POWER HUD -->
   <div id="powerHUD" style="display:flex;justify-content:center;gap:0.5rem;margin-top:0.6rem;flex-wrap:wrap"></div>
@@ -901,7 +1016,76 @@ audio{display:none}
       <div id="shopContent"><p class="no-login-msg">Carregando... 🌸</p></div>
     </div>
   </div>
+
+  <!-- DUEL BOARD VIEW -->
+  <div id="viewDuel" style="display:none;margin-top:1rem">
+    <div class="duel-arena">
+
+      <!-- HUD: dois jogadores -->
+      <div class="duel-hud">
+        <!-- Jogador: EU -->
+        <div class="duel-player me">
+          <div id="duelMyAvatar" class="duel-avatar">🌸</div>
+          <div id="duelMyName" class="duel-player-name">Você</div>
+          <div id="duelMyPairs" class="duel-pairs-count">0</div>
+          <div class="duel-pairs-label">pares</div>
+          <div id="duelMyTime" class="duel-time">0s</div>
+        </div>
+
+        <div class="duel-vs">⚔️<br>VS</div>
+
+        <!-- Jogador: OPONENTE -->
+        <div class="duel-player opponent">
+          <div id="duelOppAvatar" class="duel-avatar" style="background:linear-gradient(135deg,#7c3aed,#06b6d4)">👾</div>
+          <div id="duelOppName" class="duel-player-name">Oponente</div>
+          <div id="duelOppPairs" class="duel-pairs-count" style="color:#7c3aed">0</div>
+          <div class="duel-pairs-label">pares</div>
+          <div id="duelOppTime" class="duel-time">—</div>
+        </div>
+      </div>
+
+      <!-- Barra de progresso comparativa -->
+      <div class="duel-progress-wrap">
+        <div class="duel-progress-label">
+          <span id="duelProgMeLabel">Você · 0/10</span>
+          <span id="duelProgOppLabel">Oponente · 0/10</span>
+        </div>
+        <div class="duel-progress-track">
+          <div id="duelProgMe" class="duel-progress-me" style="width:0%"></div>
+          <div id="duelProgOpp" class="duel-progress-opp" style="width:0%"></div>
+        </div>
+      </div>
+
+      <!-- Status texto -->
+      <div id="duelStatusBar" class="duel-status-bar">⚔️ Duelo em andamento!</div>
+
+      <!-- Tabuleiro do duelo (shared seed) -->
+      <div class="board" id="duelBoard"></div>
+
+    </div>
+  </div>
 </main>
+
+<!-- DUEL RESULT OVERLAY -->
+<div class="duel-result-overlay" id="duelResultOverlay">
+  <div class="duel-result-box">
+    <span id="duelResultEmoji" class="duel-result-emoji">🏆</span>
+    <div id="duelResultTitle" class="duel-result-title">Vitória!</div>
+    <div id="duelResultDetail" class="duel-result-detail"></div>
+    <div id="duelResultCoins" class="duel-result-coins" style="display:none"></div>
+    <div class="duel-result-score">
+      <div class="duel-result-score-col">
+        <span>Seus pares</span>
+        <span id="duelResMePairs">0</span>
+      </div>
+      <div class="duel-result-score-col opp">
+        <span>Oponente</span>
+        <span id="duelResOppPairs">0</span>
+      </div>
+    </div>
+    <button class="btn" onclick="closeDuelResult()" style="margin-top:0.6rem">🌸 Voltar ao jogo</button>
+  </div>
+</div>
 
 <!-- SPECIAL MESSAGE OVERLAY (aparece só uma vez) -->
 <div class="overlay" id="overlaySpecial">
@@ -1100,10 +1284,12 @@ window._renderCoinDisplay = function(){
 
 // ── SHOP ─────────────────────────────────────────────
 const SHOP_ITEMS = [
-  { id:'revealer',   icon:'🔍', name:'Revelador',      desc:'Revela todas as cartas por 2s',           price:500, modes:['normal','hard'] },
-  { id:'freeze',     icon:'❄️', name:'Congelar Tempo',  desc:'Para o cronômetro por 15s (só Difícil)',   price:400, modes:['hard'] },
-  { id:'guaranteed', icon:'💣', name:'Par Garantido',   desc:'Garante o próximo par certo',              price:600, modes:['normal','hard'] },
-  { id:'xp2',        icon:'🌟', name:'Dobrador de XP',  desc:'Dobra os pontos desta partida',           price:300, modes:['normal','hard'] },
+  { id:'revealer',   icon:'🔍', name:'Revelador',      desc:'Revela todas as cartas por 2s',                      price:500, modes:['normal','hard'] },
+  { id:'freeze',     icon:'❄️', name:'Congelar Tempo',  desc:'Para o cronômetro por 15s (só Difícil)',              price:400, modes:['hard'] },
+  { id:'guaranteed', icon:'💣', name:'Par Garantido',   desc:'Garante o próximo par certo',                        price:600, modes:['normal','hard'] },
+  { id:'xp2',        icon:'🌟', name:'Dobrador de XP',  desc:'Dobra os pontos desta partida',                     price:300, modes:['normal','hard'] },
+  { id:'shuffle',    icon:'🐱', name:'Embaralhar',      desc:'Embaralha as cartas do oponente no duelo! 🪄',        price:450, modes:['duel'] },
+  { id:'flashbang',  icon:'😹', name:'Flashbang Gato',  desc:'Um gato rindo toma a tela do oponente por 3s! 😂',   price:350, modes:['duel'] },
 ];
 
 // Active powers for current game
@@ -1121,9 +1307,9 @@ function renderShop(){
       ${SHOP_ITEMS.map(item=>{
         const qty=getItemCount(item.id);
         const canBuy=coins>=item.price;
-        return `<div class="shop-card">
+        return `<div class="shop-card${item.modes.includes('duel')?' duel-item':''}">
           <div class="shop-icon">${item.icon}</div>
-          <div class="shop-name">${item.name}</div>
+          <div class="shop-name">${item.name}${item.modes.includes('duel')?'<span class="duel-badge">⚔️ Duelo</span>':''}</div>
           <div class="shop-desc">${item.desc}</div>
           <div class="shop-qty">Estoque: <strong>${qty}</strong></div>
           <button class="shop-btn${canBuy?'':' disabled'}" onclick="buyItem('${item.id}')" ${canBuy?'':'disabled'}>
@@ -1153,13 +1339,26 @@ function renderPowerHUD(){
   const el=document.getElementById('powerHUD'); if(!el) return;
   const inv=getInventory();
   const inGame=timerStarted;
+  const inDuel=!!_duelState && !_duelFinished;
   el.innerHTML=SHOP_ITEMS.map(item=>{
     const qty=inv[item.id]||0;
+    const isDuelOnly=item.modes.length===1&&item.modes[0]==='duel';
+    if(isDuelOnly){
+      // Mostrar só no duelo
+      if(!inDuel) return '';
+      const canUse=qty>0&&inDuel;
+      return `<button class="power-btn duel-power${canUse?'':' muted'}"
+        onclick="usePower('${item.id}')"
+        title="${item.name}: ${item.desc}"
+        ${canUse?'':' disabled'}>
+        ${item.icon} <span class="power-qty">${qty}</span>
+      </button>`;
+    }
     const modeOk=item.modes.includes(gameMode);
     const active=activePowers[item.id];
     const canUse=qty>0&&modeOk&&inGame&&!active;
-    return `<button class="power-btn${active?' active':''}${!modeOk?' muted':''}" 
-      onclick="usePower('${item.id}')" 
+    return `<button class="power-btn${active?' active':''}${!modeOk?' muted':''}"
+      onclick="usePower('${item.id}')"
       title="${item.name}: ${item.desc}"
       ${canUse?'':' disabled'}>
       ${item.icon} <span class="power-qty">${qty}</span>
@@ -1201,8 +1400,68 @@ function usePower(id){
   } else if(id==='xp2'){
     activePowers.xp2=true;
     showToast('🌟 XP dobrado ativado!');
+  } else if(id==='shuffle'){
+    if(!_duelState||_duelFinished){ showToast('⚔️ Só pode usar em um duelo ativo!',true); addItem(id); return; }
+    showToast('🐱 Embaralhando as cartas do oponente...');
+    _playMagicSound();
+    _showMagicCat();
+    window._duelSendAction && window._duelSendAction(_duelState.duelId, { type:'shuffle', by:_duelState.myUid });
+  } else if(id==='flashbang'){
+    if(!_duelState||_duelFinished){ showToast('⚔️ Só pode usar em um duelo ativo!',true); addItem(id); return; }
+    showToast('😹 Flashbang enviado para o oponente!');
+    window._duelSendAction && window._duelSendAction(_duelState.duelId, { type:'flashbang', by:_duelState.myUid });
   }
   renderPowerHUD();
+}
+
+// ── EFEITOS DE DUELO ─────────────────────────────────
+function _playMagicSound(){
+  try{ const a=document.getElementById('sfxMagic'); if(a){ a.currentTime=0; a.volume=0.7; a.play().catch(()=>{}); } }catch(e){}
+}
+function _playFlashbangSound(){
+  try{ const a=document.getElementById('sfxFlashbang'); if(a){ a.currentTime=0; a.volume=0.7; a.play().catch(()=>{}); } }catch(e){}
+}
+
+function _showMagicCat(){
+  const el=document.createElement('div');
+  el.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9000;pointer-events:none;text-align:center';
+  el.innerHTML='<img src="embaralhar.gif" style="width:180px;height:180px;border-radius:20px;box-shadow:0 8px 32px rgba(233,30,140,0.4)">';
+  document.body.appendChild(el);
+  setTimeout(()=>{ el.style.transition='opacity 0.4s'; el.style.opacity='0'; setTimeout(()=>el.remove(),400); },2000);
+}
+
+function _showFlashbang(){
+  const el=document.createElement('div');
+  el.style.cssText='position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);pointer-events:all';
+  el.innerHTML='<img src="flashbang.gif" style="max-width:90vw;max-height:80vh;border-radius:20px">';
+  document.body.appendChild(el);
+  _playFlashbangSound();
+  setTimeout(()=>{ el.style.transition='opacity 0.3s'; el.style.opacity='0'; setTimeout(()=>el.remove(),300); },3000);
+}
+
+function _applyShuffleEffect(){
+  // Reembaralha as cartas não combinadas no tabuleiro do duelo
+  if(!_duelState) return;
+  _playMagicSound();
+  _showMagicCat();
+  // Pega os índices não combinados
+  const board=document.getElementById('duelBoard'); if(!board) return;
+  const unmatched=[..._duelCards.keys()].filter(i=>!_duelMatched.includes(i));
+  // Embaralha os emojis/labels nessas posições
+  const vals=unmatched.map(i=>({emoji:_duelCards[i].emoji,label:_duelCards[i].label}));
+  for(let i=vals.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1));[vals[i],vals[j]]=[vals[j],vals[i]]; }
+  unmatched.forEach((cardIdx,i)=>{ _duelCards[cardIdx].emoji=vals[i].emoji; _duelCards[cardIdx].label=vals[i].label; });
+  // Atualizar faces das cartas no DOM sem revelar
+  board.querySelectorAll('.card:not(.matched)').forEach(el=>{
+    const idx=parseInt(el.dataset.index);
+    const front=el.querySelector('.card-front');
+    if(front){
+      front.innerHTML=`<div class="emoji">${_duelCards[idx].emoji}</div><div class="label">${_duelCards[idx].label}</div>`;
+    }
+    el.classList.remove('flipped');
+  });
+  _duelFlipped=[]; _duelLocked=false;
+  showToast('🐱 Suas cartas foram embaralhadas!',true);
 }
 
 // Ganhar moedas ao completar partida
@@ -1801,19 +2060,32 @@ function handlePhotoUpload(event) {
 }
 
 // ── TABS ──────────────────────────────────────────────
-const TAB_VIEWS={game:'viewGame',leaderboard:'viewLeaderboard',records:'viewRecords',history:'viewHistory',achievements:'viewAchievements',profile:'viewProfile',gifts:'viewGifts',shop:'viewShop'};
-const TAB_BTNS={game:'tabGame',leaderboard:'tabLb',records:'tabRec',history:'tabHist',achievements:'tabAch',profile:'tabProfile',gifts:'tabGifts',shop:'tabShop'};
+const TAB_VIEWS={game:'viewGame',leaderboard:'viewLeaderboard',records:'viewRecords',history:'viewHistory',achievements:'viewAchievements',profile:'viewProfile',gifts:'viewGifts',shop:'viewShop',duel:'viewDuel'};
+const TAB_BTNS={game:'tabGame',leaderboard:'tabLb',records:'tabRec',history:'tabHist',achievements:'tabAch',profile:'tabProfile',gifts:'tabGifts',shop:'tabShop',duel:'tabDuel'};
 
 function openTab(tab) {
   Object.keys(TAB_VIEWS).forEach(k => {
     document.getElementById(TAB_VIEWS[k]).style.display = k===tab ? 'block' : 'none';
     document.getElementById(TAB_BTNS[k]).classList.toggle('active', k===tab);
   });
+
   if (!window._currentUser) {
-    ['lbContent','recordsContent','historyContent','profileContent','giftsContent','inboxContent'].forEach(id => {
-      const el = document.getElementById(id); if (el) el.innerHTML = '<p class="no-login-msg">Faça login para ver esta seção! 🌸</p>';
+    // Só mostrar aviso na aba que está sendo aberta, não em todas
+    const tabContentMap = {
+      leaderboard: ['lbContent'],
+      records:     ['recordsContent'],
+      history:     ['historyContent'],
+      profile:     ['profileContent'],
+      gifts:       ['giftsContent','inboxContent'],
+    };
+    const ids = tabContentMap[tab] || [];
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = '<p class="no-login-msg">Faça login para ver esta seção! 🌸</p>';
     });
+    return; // não tenta carregar dados sem login
   }
+
   if (tab==='leaderboard') window._loadLeaderboard && window._loadLeaderboard();
   if (tab==='records')     window._loadPersonalRecords && window._loadPersonalRecords();
   if (tab==='history')     window._loadHistory && window._loadHistory();
@@ -2060,13 +2332,450 @@ function spawnDecors(){
   });
 }
 
+// ── DUEL BOARD LOGIC ──────────────────────────────────
+
+// Estado do duelo atual
+let _duelState = null; // { duelId, seed, bet, myRole, myUid, oppUid, oppName, oppAvatar, totalPairs }
+let _duelCards = [];
+let _duelFlipped = [], _duelMatched = [], _duelLocked = false;
+let _duelMyPairs = 0, _duelOppPairs = 0;
+let _duelSeconds = 0, _duelTimerInterval = null;
+let _duelFinished = false;
+let _unsubDuelBoard = null;
+
+// Bloqueio de entrada dupla — guarda IDs de duelos já iniciados nesta sessão
+const _duelStartedIds = new Set();
+
+// Timeout de abandono
+let _duelOppLastActivity = null;
+let _duelAbandonInterval = null;
+const DUEL_ABANDON_TIMEOUT = 45; // segundos sem atividade do oponente = W.O.
+
+// Seeded random (para gerar o mesmo tabuleiro nos dois dispositivos)
+function seededRandom(seed) {
+  let s = seed;
+  return function() {
+    s = (s * 1664525 + 1013904223) & 0xffffffff;
+    return (s >>> 0) / 0xffffffff;
+  };
+}
+
+function shuffleSeeded(arr, seed) {
+  const rng = seededRandom(seed);
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function buildDuelCards(seed) {
+  // Usa apenas as cartas do modo Normal (10 pares = 20 cartas)
+  const pool = CARDS_NORMAL;
+  const paired = [...pool, ...pool].map((c, i) => ({ ...c, id: i }));
+  return shuffleSeeded(paired, seed);
+}
+
+// Iniciar tabuleiro de duelo (chamado quando status === 'accepted')
+window.startDuelBoard = function(duel) {
+  const user = window._currentUser; if (!user) return;
+
+  // ── EDGE CASE 1: Bloqueio de entrada dupla ──────────
+  // Evita que o listener dispare startDuelBoard duas vezes para o mesmo duelo
+  if (_duelStartedIds.has(duel.id)) return;
+  _duelStartedIds.add(duel.id);
+
+  const isPlayer1 = duel.player1 === user.uid;
+  _duelState = {
+    duelId: duel.id,
+    seed: duel.seed,
+    bet: duel.bet || 0,
+    myRole: isPlayer1 ? 'player1' : 'player2',
+    myUid: user.uid,
+    myName: user.displayName || user.email.split('@')[0],
+    myAvatar: localStorage.getItem('selectedAvatar') || '🌸',
+    oppUid: isPlayer1 ? duel.player2 : duel.player1,
+    oppName: isPlayer1 ? (duel.player2Name || 'Oponente') : duel.player1Name,
+    oppAvatar: isPlayer1 ? (duel.player2Avatar || '👾') : (duel.player1Avatar || '👾'),
+    totalPairs: 10,
+  };
+
+  _duelCards = buildDuelCards(duel.seed);
+  _duelFlipped = []; _duelMatched = []; _duelLocked = false;
+  _duelMyPairs = 0; _duelOppPairs = 0;
+  _duelSeconds = 0; _duelFinished = false;
+  _duelOppLastActivity = Date.now();
+  clearInterval(_duelTimerInterval);
+  clearInterval(_duelAbandonInterval);
+
+  // Mostrar aba do duelo
+  const tabDuel = document.getElementById('tabDuel');
+  if (tabDuel) tabDuel.style.display = 'inline-flex';
+  openTab('duel');
+
+  // Preencher HUD
+  _updateDuelHUD();
+
+  // Renderizar tabuleiro
+  _renderDuelBoard();
+
+  // Iniciar timer local
+  _duelTimerInterval = setInterval(() => {
+    _duelSeconds++;
+    document.getElementById('duelMyTime').textContent = _duelSeconds + 's';
+  }, 1000);
+
+  // ── EDGE CASE 3: Watchdog de abandono ───────────────
+  // Verifica a cada 5s se o oponente está inativo há mais de DUEL_ABANDON_TIMEOUT
+  _duelAbandonInterval = setInterval(() => {
+    if (_duelFinished || !_duelState) { clearInterval(_duelAbandonInterval); return; }
+    // Só checar depois de 10s de jogo (dar tempo de conectar)
+    if (_duelSeconds < 10) return;
+    const elapsed = (Date.now() - _duelOppLastActivity) / 1000;
+    if (elapsed >= DUEL_ABANDON_TIMEOUT) {
+      clearInterval(_duelAbandonInterval);
+      showToast(`⚠️ ${_duelState.oppName} abandonou o duelo!`);
+      _finishDuel('opp_abandoned');
+    } else if (elapsed >= DUEL_ABANDON_TIMEOUT - 10) {
+      // Aviso 10s antes
+      const remaining = Math.ceil(DUEL_ABANDON_TIMEOUT - elapsed);
+      const statusEl = document.getElementById('duelStatusBar');
+      if (statusEl) {
+        statusEl.textContent = `⚠️ Oponente inativo — W.O. em ${remaining}s`;
+        statusEl.style.color = '#ef4444';
+      }
+    }
+  }, 5000);
+
+  // Ouvir progresso do oponente no Firestore em tempo real
+  _listenDuelProgress(duel.id);
+
+  showToast('⚔️ Duelo iniciado! Boa sorte! 🌸');
+};
+
+function _updateDuelHUD() {
+  if (!_duelState) return;
+  const s = _duelState;
+
+  // Meu avatar
+  const myAv = document.getElementById('duelMyAvatar');
+  if (myAv) myAv.textContent = s.myAvatar;
+  const myName = document.getElementById('duelMyName');
+  if (myName) myName.textContent = s.myName;
+
+  // Oponente
+  const oppAv = document.getElementById('duelOppAvatar');
+  if (oppAv) oppAv.textContent = s.oppAvatar;
+  const oppName = document.getElementById('duelOppName');
+  if (oppName) oppName.textContent = s.oppName;
+
+  _updateDuelProgress();
+}
+
+function _updateDuelProgress() {
+  if (!_duelState) return;
+  const total = _duelState.totalPairs;
+
+  document.getElementById('duelMyPairs').textContent = _duelMyPairs;
+  document.getElementById('duelOppPairs').textContent = _duelOppPairs;
+  document.getElementById('duelProgMeLabel').textContent = `Você · ${_duelMyPairs}/${total}`;
+  document.getElementById('duelProgOppLabel').textContent = `${_duelState.oppName} · ${_duelOppPairs}/${total}`;
+
+  const myPct = (_duelMyPairs / total) * 100;
+  const oppPct = (_duelOppPairs / total) * 100;
+  document.getElementById('duelProgMe').style.width = myPct + '%';
+  document.getElementById('duelProgOpp').style.width = oppPct + '%';
+
+  // Status text
+  const statusEl = document.getElementById('duelStatusBar');
+  if (!statusEl) return;
+  if (_duelMyPairs > _duelOppPairs) {
+    statusEl.textContent = '🌸 Você está na frente!';
+    statusEl.style.color = 'var(--pink-deep)';
+  } else if (_duelOppPairs > _duelMyPairs) {
+    statusEl.textContent = '😰 Oponente está na frente!';
+    statusEl.style.color = '#7c3aed';
+  } else if (_duelMyPairs === 0) {
+    statusEl.textContent = '⚔️ Duelo em andamento!';
+    statusEl.style.color = 'var(--pink-deep)';
+  } else {
+    statusEl.textContent = '🤝 Empatados! Quem vai sair na frente?';
+    statusEl.style.color = '#d97706';
+  }
+}
+
+function _renderDuelBoard() {
+  const board = document.getElementById('duelBoard');
+  board.innerHTML = '';
+  board.className = 'board'; // modo normal (5 colunas)
+  _duelCards.forEach((card, index) => {
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.dataset.index = index;
+    el.innerHTML = `<div class="card-inner">
+      <div class="card-face card-back"></div>
+      <div class="card-face card-front">
+        <div class="emoji">${card.emoji}</div>
+        <div class="label">${card.label}</div>
+      </div>
+    </div>`;
+    el.addEventListener('click', () => _onDuelCardClick(el, index));
+    board.appendChild(el);
+  });
+}
+
+function _onDuelCardClick(el, index) {
+  if (_duelLocked || _duelFinished) return;
+  if (el.classList.contains('flipped') || el.classList.contains('matched')) return;
+  if (_duelFlipped.length === 2) return;
+
+  playFlip();
+  el.classList.add('flipped');
+  _duelFlipped.push({ el, index });
+
+  if (_duelFlipped.length === 2) {
+    _duelLocked = true;
+    _checkDuelMatch();
+  }
+}
+
+function _checkDuelMatch() {
+  const [a, b] = _duelFlipped;
+  const isMatch = _duelCards[a.index].emoji === _duelCards[b.index].emoji;
+
+  if (isMatch) {
+    setTimeout(() => {
+      a.el.classList.add('matched');
+      b.el.classList.add('matched');
+      spawnBurst(a.el);
+      _duelMatched.push(a.index, b.index);
+      _duelMyPairs++;
+      playComboSound(1);
+
+      // Publicar progresso no Firestore
+      _publishDuelProgress();
+      _updateDuelProgress();
+      _duelFlipped = [];
+      _duelLocked = false;
+
+      // Verificar vitória minha
+      if (_duelMyPairs === _duelState.totalPairs) {
+        _finishDuel('me_complete');
+      }
+    }, 300);
+  } else {
+    setTimeout(() => {
+      a.el.classList.remove('flipped');
+      b.el.classList.remove('flipped');
+      _duelFlipped = [];
+      _duelLocked = false;
+    }, 1000);
+  }
+}
+
+// Publicar meu progresso no Firestore
+async function _publishDuelProgress() {
+  if (!_duelState || !window._currentUser) return;
+  const s = _duelState;
+  const field = s.myRole + 'Pairs'; // player1Pairs ou player2Pairs
+  const timeField = s.myRole + 'Time';
+  try {
+    // Usar bridge do Firestore (segundo módulo)
+    await window._duelUpdateProgress(s.duelId, field, _duelMyPairs, timeField, _duelSeconds);
+  } catch(e) { console.log('duel progress error', e); }
+}
+
+// Ouvir progresso do oponente
+function _listenDuelProgress(duelId) {
+  if (_unsubDuelBoard) { _unsubDuelBoard(); _unsubDuelBoard = null; }
+  // Delegado ao módulo Firebase
+  window._duelListenProgress && window._duelListenProgress(duelId, _onDuelProgressUpdate);
+}
+
+function _onDuelProgressUpdate(data) {
+  if (!_duelState || _duelFinished) return;
+  const s = _duelState;
+  const oppPairsField = (s.myRole === 'player1' ? 'player2' : 'player1') + 'Pairs';
+  const oppTimeField  = (s.myRole === 'player1' ? 'player2' : 'player1') + 'Time';
+
+  // ── Processar ação do oponente (shuffle / flashbang) ──
+  const action = data.pendingAction;
+  if (action && action.by !== s.myUid && action.at !== window._lastDuelActionAt) {
+    window._lastDuelActionAt = action.at;
+    if (action.type === 'shuffle') {
+      _applyShuffleEffect();
+    } else if (action.type === 'flashbang') {
+      _showFlashbang();
+    }
+    // Limpar a ação do Firestore após processar
+    window._duelClearAction && window._duelClearAction(s.duelId);
+  }
+
+  const newOppPairs = data[oppPairsField] || 0;
+  const oppTime = data[oppTimeField] || null;
+
+  // Feedback animado se oponente acertou um par novo
+  if (newOppPairs > _duelOppPairs) {
+    // ── EDGE CASE 3: Registrar atividade do oponente ──
+    _duelOppLastActivity = Date.now();
+
+    _duelOppPairs = newOppPairs;
+    _showOppFeedback(true);
+    if (oppTime !== null) {
+      document.getElementById('duelOppTime').textContent = oppTime + 's';
+    }
+    _updateDuelProgress();
+
+    // ── EDGE CASE 2: Oponente terminou — checar empate por tempo ──
+    if (_duelOppPairs >= s.totalPairs) {
+      if (_duelMyPairs >= s.totalPairs) {
+        // Ambos completaram: quem teve menor tempo vence
+        const myTime = _duelSeconds;
+        const oppTimeVal = oppTime || 9999;
+        if (myTime < oppTimeVal) {
+          _finishDuel('tiebreak_win');
+        } else if (oppTimeVal < myTime) {
+          _finishDuel('tiebreak_loss');
+        } else {
+          _finishDuel('tiebreak_draw');
+        }
+      } else {
+        _finishDuel('opp_complete');
+      }
+    }
+  }
+
+  // Status do duelo terminou via campo winner (ou W.O.)
+  if (!_duelFinished) {
+    if (data.status === 'finished' && data.winner) {
+      if (data.winner === s.myUid) {
+        _finishDuel('win');
+      } else if (data.winner === 'draw') {
+        _finishDuel('tiebreak_draw');
+      } else {
+        _finishDuel('loss');
+      }
+    } else if (data.status === 'abandoned') {
+      // Oponente declarou W.O. pelo nosso lado
+      _finishDuel('win');
+    }
+  }
+}
+
+function _showOppFeedback(hit) {
+  const el = document.createElement('div');
+  el.className = 'opp-feedback ' + (hit ? 'hit' : 'miss');
+  el.textContent = hit ? '👾 +1 par!' : '👾 errou!';
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 1500);
+}
+
+// Finalizar duelo
+async function _finishDuel(reason) {
+  if (_duelFinished) return;
+  _duelFinished = true;
+  clearInterval(_duelTimerInterval);
+  clearInterval(_duelAbandonInterval); // ── Parar watchdog
+
+  const s = _duelState;
+
+  // ── Categorizar resultado ────────────────────────────
+  const iWon = ['me_complete', 'win', 'tiebreak_win', 'opp_abandoned'].includes(reason);
+  const isDraw = ['tiebreak_draw'].includes(reason);
+  // loss, opp_complete, tiebreak_loss = derrota
+
+  // ── Publicar resultado final no Firestore ────────────
+  if (reason === 'me_complete') {
+    try {
+      await window._duelSetWinner(s.duelId, s.myUid, _duelMyPairs, _duelSeconds);
+    } catch(e) {}
+  } else if (reason === 'tiebreak_win') {
+    // Ambos completaram mas eu fui mais rápido — registrar como minha vitória
+    try {
+      await window._duelSetWinner(s.duelId, s.myUid, _duelMyPairs, _duelSeconds);
+    } catch(e) {}
+  } else if (reason === 'tiebreak_draw') {
+    try {
+      await window._duelSetWinner(s.duelId, 'draw', _duelMyPairs, _duelSeconds);
+    } catch(e) {}
+  } else if (reason === 'opp_abandoned') {
+    // Declarar W.O. — marcar oponente como abandonou
+    try {
+      await window._duelSetAbandoned(s.duelId, s.myUid);
+    } catch(e) {}
+  }
+
+  // ── Transferir moedas ────────────────────────────────
+  let coinsMsg = '';
+  if (s.bet > 0) {
+    if (iWon) {
+      addCoins(s.bet * 2);
+      coinsMsg = `🪙 +${s.bet * 2} moedas ganhas!`;
+    } else if (isDraw) {
+      // Empate: devolver a aposta (não ganha nem perde)
+      coinsMsg = `🪙 Aposta devolvida (empate)`;
+    } else {
+      setCoins(Math.max(0, getCoins() - s.bet));
+      coinsMsg = `🪙 -${s.bet} moedas perdidas`;
+    }
+  }
+
+  // ── Textos do overlay ────────────────────────────────
+  const reasonLabels = {
+    me_complete:    { emoji:'🏆', title:'Vitória!',    detail:`Você completou todos os pares em ${_duelSeconds}s!` },
+    win:            { emoji:'🏆', title:'Vitória!',    detail:`Você venceu o duelo!` },
+    tiebreak_win:   { emoji:'⚡', title:'Vitória!',    detail:`Ambos completaram, mas você foi mais rápido! (${_duelSeconds}s)` },
+    tiebreak_draw:  { emoji:'🤝', title:'Empate!',     detail:`Mesma velocidade! Foi um duelo incrível!` },
+    tiebreak_loss:  { emoji:'💜', title:'Derrota...',  detail:`Ambos completaram, mas ${s.oppName} foi mais rápido!` },
+    opp_complete:   { emoji:'💜', title:'Derrota...',  detail:`${s.oppName} terminou primeiro!` },
+    loss:           { emoji:'💜', title:'Derrota...',  detail:`${s.oppName} venceu o duelo!` },
+    opp_abandoned:  { emoji:'🏆', title:'W.O.!',       detail:`${s.oppName} abandonou o duelo. Vitória por W.O.!` },
+  };
+  const label = reasonLabels[reason] || { emoji:'🌸', title:'Fim!', detail:'O duelo terminou.' };
+
+  document.getElementById('duelResultEmoji').textContent = label.emoji;
+  document.getElementById('duelResultTitle').textContent = label.title;
+  document.getElementById('duelResultTitle').className = 'duel-result-title' + (iWon||isDraw ? '' : ' loss');
+  document.getElementById('duelResultDetail').textContent = label.detail;
+  document.getElementById('duelResMePairs').textContent = _duelMyPairs;
+  document.getElementById('duelResOppPairs').textContent = _duelOppPairs;
+
+  const coinsEl = document.getElementById('duelResultCoins');
+  if (s.bet > 0) {
+    coinsEl.textContent = coinsMsg;
+    coinsEl.style.display = 'inline-block';
+  } else {
+    coinsEl.style.display = 'none';
+  }
+
+  // Pequeno delay para ter impacto
+  setTimeout(() => {
+    document.getElementById('duelResultOverlay').classList.add('show');
+    if (iWon) { spawnConfetti(); playVictory(); }
+  }, 600);
+}
+
+function closeDuelResult() {
+  document.getElementById('duelResultOverlay').classList.remove('show');
+  // Parar listeners e timers
+  if (_unsubDuelBoard) { _unsubDuelBoard(); _unsubDuelBoard = null; }
+  clearInterval(_duelTimerInterval);
+  clearInterval(_duelAbandonInterval);
+  // Esconder aba duel e voltar ao jogo
+  const tabDuel = document.getElementById('tabDuel');
+  if (tabDuel) tabDuel.style.display = 'none';
+  _duelState = null;
+  openTab('game');
+}
+
 spawnDecors();
 initGame();
 </script>
 
 <!-- Bridge to access Firestore from non-module context -->
 <script type="module">
-import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getFirestore, doc, getDoc, setDoc, onSnapshot, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 import { initializeApp, getApps } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 
 const apps = getApps();
@@ -2081,6 +2790,67 @@ window._dbBridge = async function(uid) {
 window._saveAvatarFirestore = async function(avatar) {
   const user = window._currentUser; if (!user) return;
   await setDoc(doc(db, 'scores', user.uid), { avatar, updatedAt: new Date().toISOString() }, { merge: true });
+};
+
+// ── DUEL REALTIME ─────────────────────────────────────
+
+// Publicar meu progresso de pares no documento do duelo
+window._duelUpdateProgress = async function(duelId, pairsField, pairsValue, timeField, timeValue) {
+  try {
+    await updateDoc(doc(db, 'duels', duelId), {
+      [pairsField]: pairsValue,
+      [timeField]: timeValue,
+    });
+  } catch(e) { console.log('duelUpdateProgress error', e); }
+};
+
+// Definir vencedor no documento do duelo
+window._duelSetWinner = async function(duelId, winnerUid, pairs, time) {
+  try {
+    await updateDoc(doc(db, 'duels', duelId), {
+      winner: winnerUid,
+      status: 'finished',
+      finishedAt: new Date().toISOString(),
+    });
+  } catch(e) { console.log('duelSetWinner error', e); }
+};
+
+// Declarar W.O. por abandono do oponente
+window._duelSetAbandoned = async function(duelId, winnerUid) {
+  try {
+    await updateDoc(doc(db, 'duels', duelId), {
+      winner: winnerUid,
+      status: 'abandoned',
+      finishedAt: new Date().toISOString(),
+    });
+  } catch(e) { console.log('duelSetAbandoned error', e); }
+};
+
+// Ouvir progresso em tempo real do documento do duelo
+window._duelListenProgress = function(duelId, callback) {
+  const unsub = onSnapshot(doc(db, 'duels', duelId), snap => {
+    if (snap.exists()) {
+      callback(snap.data());
+    }
+  });
+  // Guardar unsub para poder cancelar
+  window._unsubDuelBoard = unsub;
+};
+
+// Enviar ação de poder para o oponente via Firestore
+window._duelSendAction = async function(duelId, action) {
+  try {
+    await updateDoc(doc(db, 'duels', duelId), {
+      pendingAction: { ...action, at: Date.now() }
+    });
+  } catch(e) { console.log('duelSendAction error', e); }
+};
+
+// Limpar ação depois de processada
+window._duelClearAction = async function(duelId) {
+  try {
+    await updateDoc(doc(db, 'duels', duelId), { pendingAction: null });
+  } catch(e) {}
 };
 </script>
 </body>
