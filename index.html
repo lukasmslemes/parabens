@@ -33,8 +33,8 @@ onAuthStateChanged(auth, user => {
   updateAuthUI(user);
 
   // Esconder loading screen imediatamente — sempre, antes de qualquer outra coisa
-  window._hideLoadingScreen && window._hideLoadingScreen();
-  window._authResolved = true; // sinaliza que o Firebase Auth já respondeu
+  const ls = document.getElementById('loadingScreen');
+  if (ls) { ls.classList.add('hide'); setTimeout(() => ls.remove(), 700); }
 
   if (user) {
     startNotifListener(user.uid);
@@ -969,21 +969,12 @@ audio{display:none}
 
 <!-- LOADING SCREEN -->
 <script>
-// Timeout de segurança: force esconder loading após 3.5s (reduzido de 6s)
-// Cobre casos onde onAuthStateChanged demora ou falha silenciosamente no mobile
-function _hideLoadingScreen() {
-  var ls = document.getElementById('loadingScreen');
-  if (!ls) return;
-  ls.classList.add('hide');
-  setTimeout(function(){ if (ls.parentNode) ls.remove(); }, 700);
-}
-window._hideLoadingScreen = _hideLoadingScreen;
-setTimeout(_hideLoadingScreen, 3500);
-// Fallback extremo — garante remoção mesmo se classList.add falhar
+// Timeout de segurança: Chrome às vezes não dispara onAuthStateChanged rapidamente
+// Força esconder a loading screen após 6s mesmo sem resposta do Firebase
 setTimeout(function() {
   var ls = document.getElementById('loadingScreen');
-  if (ls && ls.parentNode) ls.parentNode.removeChild(ls);
-}, 5000);
+  if (ls) { ls.classList.add('hide'); setTimeout(function(){ if(ls.parentNode) ls.remove(); }, 700); }
+}, 6000);
 </script>
 <div id="loadingScreen">
   <div class="loading-emoji">🌸</div>
@@ -1013,7 +1004,7 @@ setTimeout(function() {
     </div>
     <div id="authLoggedIn">
       <div class="notif-wrap">
-        <button class="notif-bell" id="notifBell" onclick="openTab('gifts'); setTimeout(()=>switchSocialTab('inbox'),400);" title="Presentes e mensagens">🔔</button>
+        <button class="notif-bell" id="notifBell" onclick="openTab('gifts'); setTimeout(()=>switchSocialTab('inbox'),100);" title="Presentes e mensagens">🔔</button>
         <div class="notif-badge" id="notifBadge">0</div>
       </div>
       <div class="coin-chip" onclick="openTab('shop')" title="Loja de poderes">
@@ -2443,27 +2434,8 @@ function openTab(tab) {
     document.getElementById(TAB_BTNS[k]).classList.toggle('active', k===tab);
   });
 
-  // Se o usuário ainda não foi resolvido (race condition no carregamento), aguardar até 2s
-  if (!window._currentUser && !window._authResolved) {
-    let _waited = 0;
-    const _waitAuth = setInterval(function() {
-      _waited += 100;
-      if (window._authResolved) {
-        clearInterval(_waitAuth);
-        _doOpenTab(tab);
-      } else if (_waited >= 2000) {
-        clearInterval(_waitAuth);
-        _doOpenTab(tab);
-      }
-    }, 100);
-    return;
-  }
-  _doOpenTab(tab);
-}
-
-function _doOpenTab(tab) {
   if (!window._currentUser) {
-    // Usuário definitivamente não logado — mostrar aviso
+    // Só mostrar aviso se o conteúdo ainda não foi carregado (evita sobrescrever dados reais)
     const tabContentMap = {
       leaderboard: ['lbContent'],
       records:     ['recordsContent'],
@@ -2474,6 +2446,7 @@ function _doOpenTab(tab) {
     const ids = tabContentMap[tab] || [];
     ids.forEach(id => {
       const el = document.getElementById(id);
+      // Só exibe aviso se o elemento estiver vazio OU só tiver o placeholder inicial (não dados reais)
       if (el) {
         const txt = el.innerHTML.trim();
         const isPlaceholder = txt === '' || (el.children.length <= 1 && el.querySelector('.no-login-msg'));
@@ -2482,7 +2455,7 @@ function _doOpenTab(tab) {
         }
       }
     });
-    return;
+    return; // não tenta carregar dados sem login
   }
   if (tab==='leaderboard') window._loadLeaderboard && window._loadLeaderboard();
   if (tab==='records')     window._loadPersonalRecords && window._loadPersonalRecords();
@@ -2508,30 +2481,18 @@ function switchSocialTab(tab) {
   document.getElementById('socialSendView').style.display = tab==='send' ? 'block' : 'none';
   document.getElementById('socialInboxView').style.display = tab==='inbox' ? 'block' : 'none';
   if (tab==='inbox') {
+    const user = window._currentUser;
     const el = document.getElementById('inboxContent');
-    function _doLoadInbox() {
-      const user = window._currentUser;
-      if (!user) {
-        if (el) el.innerHTML = '<p class="no-login-msg">Faça login para ver sua caixa de entrada! 🌸</p>';
-        return;
-      }
-      if (el) el.innerHTML = '<p class="no-login-msg">Carregando... 🌸</p>';
-      window._loadMessages && window._loadMessages();
-      window._loadGifts && window._loadGifts();
-      window.markMessagesRead && window.markMessagesRead();
-      window.markGiftsRead && window.markGiftsRead();
+    if (!user) {
+      if (el) el.innerHTML = '<p class="no-login-msg">Faça login para ver sua caixa de entrada! 🌸</p>';
+      return;
     }
-    if (window._currentUser) {
-      _doLoadInbox();
-    } else {
-      // Auth pode ainda estar resolvendo — aguardar até 2s antes de mostrar aviso
-      let _waited = 0;
-      const _waitInbox = setInterval(function() {
-        _waited += 100;
-        if (window._currentUser) { clearInterval(_waitInbox); _doLoadInbox(); }
-        else if (_waited >= 2000) { clearInterval(_waitInbox); _doLoadInbox(); }
-      }, 100);
-    }
+    // Mostrar loading enquanto busca
+    if (el) el.innerHTML = '<p class="no-login-msg">Carregando... 🌸</p>';
+    window._loadMessages && window._loadMessages();
+    window._loadGifts && window._loadGifts();
+    window.markMessagesRead && window.markMessagesRead();
+    window.markGiftsRead && window.markGiftsRead();
   }
 }
 
