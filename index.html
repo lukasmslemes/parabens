@@ -9,7 +9,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged, updateProfile } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import { getFirestore, doc, setDoc, getDoc, collection, getDocs, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp, Timestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getFirestore, doc, setDoc, getDoc, collection, getDocs, addDoc, query, where, orderBy, limit, onSnapshot, updateDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyATJAen6Qtzm-uOqHtD6ubQUDmVdqG1BUM",
@@ -34,10 +34,19 @@ onAuthStateChanged(auth, user => {
     window._loadPersonalRecords && window._loadPersonalRecords();
     window._loadHistory && window._loadHistory();
     window._loadAllUsers && window._loadAllUsers();
-    window._loadDailyLeaderboard && window._loadDailyLeaderboard();
     startNotifListener(user.uid);
     // Set online presence
     setOnlinePresence(user.uid, true);
+    // Load coins and inventory from Firestore (overrides localStorage)
+    window._loadCoinsFromFirestore && window._loadCoinsFromFirestore(user.uid).then(({ coins, inventory }) => {
+      if (coins !== null) {
+        localStorage.setItem('coins_' + user.uid, String(coins));
+      }
+      if (inventory !== null) {
+        localStorage.setItem('inventory_' + user.uid, JSON.stringify(inventory));
+      }
+      window._renderCoinDisplay && window._renderCoinDisplay();
+    });
   } else {
     if (unsubNotif) { unsubNotif(); unsubNotif = null; }
   }
@@ -168,43 +177,6 @@ window.saveScore = async function(score, mode, time, movesCount) {
   window._loadHistory && window._loadHistory();
 };
 
-// ── DAILY CHALLENGE ───────────────────────────────────
-window.saveDailyScore = async function(score, time, moves) {
-  const user = window._currentUser; if (!user) return;
-  const today = getDailyKey();
-  const docId = today + '_' + user.uid;
-  const ref = doc(db, 'daily_scores', docId);
-  const existing = await getDoc(ref);
-  if (existing.exists()) { showToast('Você já jogou o desafio de hoje! 🌸'); return false; }
-  const av = localStorage.getItem('selectedAvatar') || '🌸';
-  await setDoc(ref, {
-    uid: user.uid, name: user.displayName || user.email.split('@')[0],
-    avatar: av, photoURL: user.photoURL || null,
-    score, time, moves, date: today, createdAt: serverTimestamp()
-  });
-  showToast('🏆 Pontuação do Desafio salva!');
-  window._loadDailyLeaderboard && window._loadDailyLeaderboard();
-  return true;
-};
-
-window.checkDailySubmitted = async function() {
-  const user = window._currentUser; if (!user) return false;
-  const today = getDailyKey();
-  const ref = doc(db, 'daily_scores', today + '_' + user.uid);
-  const snap = await getDoc(ref);
-  return snap.exists();
-};
-
-window._loadDailyLeaderboard = async function() {
-  try {
-    const today = getDailyKey();
-    const q = query(collection(db, 'daily_scores'), where('date', '==', today), orderBy('time', 'asc'), limit(20));
-    const snap = await getDocs(q);
-    const players = []; snap.forEach(d => players.push({ id: d.id, ...d.data() }));
-    window.renderDailyLeaderboard && window.renderDailyLeaderboard(players);
-  } catch(e) { console.log('daily_lb', e); }
-};
-
 window._loadLeaderboard = async function() {
   try {
     const snap = await getDocs(collection(db, 'scores'));
@@ -332,6 +304,28 @@ window.sendReaction = async function(collection_, id, emoji) {
     window._loadGifts && window._loadGifts();
     window._loadMessages && window._loadMessages();
   } catch(e) { showToast('Erro ao reagir', true); }
+};
+
+// ── COINS SYNC ────────────────────────────────────────
+window._syncCoinsToFirestore = async function(uid, coins, inventory) {
+  try {
+    await setDoc(doc(db, 'scores', uid), {
+      coins: coins,
+      inventory: inventory,
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
+  } catch(e) { console.log('coins sync error', e); }
+};
+
+window._loadCoinsFromFirestore = async function(uid) {
+  try {
+    const snap = await getDoc(doc(db, 'scores', uid));
+    if (snap.exists()) {
+      const data = snap.data();
+      return { coins: data.coins ?? null, inventory: data.inventory ?? null };
+    }
+  } catch(e) {}
+  return { coins: null, inventory: null };
 };
 
 // ── PROFILE PHOTO (base64 stored in Firestore) ────────
@@ -675,21 +669,6 @@ audio{display:none}
 .cat-surprise{position:fixed;pointer-events:none;z-index:500;font-size:5rem;animation:catAppear 2.2s ease forwards}
 @keyframes catAppear{0%{opacity:0;transform:scale(0.3)}15%{opacity:1;transform:scale(1.2)}30%{transform:scale(1)}80%{opacity:1}100%{opacity:0;transform:scale(0.8) translateY(-30px)}}
 
-/* DAILY CHALLENGE */
-.daily-header{text-align:center;margin-bottom:1rem}
-.daily-badge{display:inline-flex;align-items:center;gap:0.4rem;background:linear-gradient(135deg,var(--pink-deep),var(--lilac));color:white;border-radius:999px;padding:0.4rem 1.1rem;font-size:0.82rem;font-weight:800;margin-bottom:0.6rem}
-.daily-date{font-size:0.78rem;color:var(--text2);font-weight:700}
-.daily-countdown{display:flex;align-items:center;justify-content:center;gap:0.4rem;background:var(--surface2);border:2px solid var(--border);border-radius:14px;padding:0.6rem 1rem;margin:0.7rem auto;max-width:280px;font-size:0.85rem;font-weight:800;color:var(--text)}
-.daily-countdown .cd-time{color:var(--pink-deep);font-family:'Pacifico',cursive;font-size:1.1rem}
-.daily-play-btn{display:block;width:100%;max-width:280px;margin:0.8rem auto;padding:0.75rem;background:linear-gradient(135deg,var(--pink-deep),var(--lilac));color:white;border:none;border-radius:14px;font-family:'Nunito',sans-serif;font-size:1rem;font-weight:800;cursor:pointer;box-shadow:0 4px 16px rgba(233,30,140,0.35);transition:all 0.2s}
-.daily-play-btn:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(233,30,140,0.45)}
-.daily-play-btn:disabled{opacity:0.5;cursor:not-allowed;transform:none}
-.daily-submitted{background:linear-gradient(135deg,rgba(34,197,94,0.12),rgba(74,222,128,0.08));border:2px solid #86efac;border-radius:14px;padding:0.8rem;text-align:center;margin:0.7rem 0;font-size:0.88rem;font-weight:700;color:#16a34a}
-[data-theme="dark"] .daily-submitted{color:#4ade80;border-color:#166534}
-.daily-rules{background:var(--surface2);border:2px solid var(--border);border-radius:14px;padding:0.8rem;margin:0.7rem 0;font-size:0.8rem;color:var(--text2);line-height:1.6}
-.daily-rules strong{color:var(--pink-deep)}
-.daily-lb-title{font-size:0.78rem;font-weight:800;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;text-align:center;margin:0.8rem 0 0.5rem}
-
 /* ACHIEVEMENTS */
 .ach-grid{display:grid;grid-template-columns:1fr 1fr;gap:0.8rem}
 .ach-card{background:var(--surface2);border:2px solid var(--border);border-radius:16px;padding:0.9rem 0.8rem;text-align:center;transition:transform 0.2s,border-color 0.2s;position:relative;overflow:hidden}
@@ -703,6 +682,31 @@ audio{display:none}
 .ach-progress span{color:var(--pink-deep);font-weight:800}
 .ach-unlock-toast{position:fixed;top:1.5rem;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,var(--pink-deep),var(--lilac));color:white;border-radius:999px;padding:0.7rem 1.6rem;font-size:0.9rem;font-weight:800;box-shadow:0 8px 24px rgba(233,30,140,0.4);z-index:1001;animation:achToastIn 0.5s cubic-bezier(0.34,1.56,0.64,1) both;white-space:nowrap}
 @keyframes achToastIn{from{transform:translateX(-50%) translateY(-30px);opacity:0}to{transform:translateX(-50%) translateY(0);opacity:1}}
+
+/* COINS */
+.coin-chip{background:linear-gradient(135deg,#ffd54f,#ffb300);color:#5a3e00;border-radius:999px;padding:0.3rem 0.9rem;font-weight:800;font-size:0.85rem;cursor:pointer;border:2px solid #ffc107;box-shadow:0 2px 8px rgba(255,193,7,0.35);transition:all 0.2s;user-select:none;flex-shrink:0}
+.coin-chip:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(255,193,7,0.5)}
+.coin-toast{position:fixed;top:5rem;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#ffd54f,#ffb300);color:#5a3e00;border-radius:999px;padding:0.5rem 1.2rem;font-size:0.88rem;font-weight:800;box-shadow:0 4px 16px rgba(255,193,7,0.4);z-index:1002;animation:toastIn 0.3s cubic-bezier(0.34,1.3,0.64,1);white-space:nowrap;transition:opacity 0.4s}
+
+/* SHOP */
+.shop-grid{display:grid;grid-template-columns:1fr 1fr;gap:0.8rem}
+.shop-card{background:var(--surface2);border:2px solid var(--border);border-radius:16px;padding:0.9rem 0.7rem;text-align:center;display:flex;flex-direction:column;align-items:center;gap:0.3rem;transition:transform 0.2s,border-color 0.2s}
+.shop-card:hover{transform:translateY(-2px);border-color:var(--pink-deep)}
+.shop-icon{font-size:2rem}
+.shop-name{font-size:0.82rem;font-weight:800;color:var(--text)}
+.shop-desc{font-size:0.68rem;color:var(--text2);line-height:1.3}
+.shop-qty{font-size:0.72rem;color:var(--text2)}
+.shop-btn{background:linear-gradient(135deg,#ffd54f,#ffb300);color:#5a3e00;border:none;border-radius:999px;padding:0.4rem 1rem;font-family:'Nunito',sans-serif;font-size:0.82rem;font-weight:800;cursor:pointer;transition:all 0.2s;margin-top:0.3rem;box-shadow:0 2px 8px rgba(255,193,7,0.3)}
+.shop-btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(255,193,7,0.5)}
+.shop-btn.disabled{background:var(--surface);color:var(--text2);border:2px solid var(--border);box-shadow:none;cursor:not-allowed}
+
+/* POWER HUD */
+.power-btn{background:var(--surface2);border:2px solid var(--border);border-radius:12px;padding:0.4rem 0.7rem;font-size:1rem;cursor:pointer;transition:all 0.2s;position:relative;display:flex;align-items:center;gap:0.3rem}
+.power-btn:not(:disabled):hover{border-color:var(--pink-deep);transform:scale(1.08)}
+.power-btn:disabled{opacity:0.4;cursor:not-allowed}
+.power-btn.active{border-color:#22c55e;background:rgba(34,197,94,0.12);animation:pulseDot 1.5s infinite}
+.power-btn.muted{opacity:0.3}
+.power-qty{font-size:0.65rem;font-weight:800;color:var(--pink-deep);background:var(--pink-light);border-radius:999px;padding:0 4px;min-width:16px;text-align:center}
 </style>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#f48fb1">
@@ -743,6 +747,9 @@ audio{display:none}
         <button class="notif-bell" id="notifBell" onclick="openTab('gifts')" title="Presentes e mensagens">🔔</button>
         <div class="notif-badge" id="notifBadge">0</div>
       </div>
+      <div class="coin-chip" onclick="openTab('shop')" title="Loja de poderes">
+        <span id="coinDisplay">🪙 0</span>
+      </div>
       <div class="user-chip" onclick="openTab('profile')">
         <div class="avatar-circle" id="userAvatar">🌸</div>
         <span class="auth-name" id="userName"></span>
@@ -775,28 +782,20 @@ audio{display:none}
   </div>
   <div class="tabs">
     <button class="tab active" onclick="openTab('game')" id="tabGame">🎮 Jogo</button>
-    <button class="tab" onclick="openTab('daily')" id="tabDaily">📅 Desafio</button>
     <button class="tab" onclick="openTab('leaderboard')" id="tabLb">🏆 Placar</button>
     <button class="tab" onclick="openTab('records')" id="tabRec">⭐ Recordes</button>
     <button class="tab" onclick="openTab('history')" id="tabHist">📜 Histórico</button>
     <button class="tab" onclick="openTab('achievements')" id="tabAch">🏅 Conquistas</button>
     <button class="tab" onclick="openTab('profile')" id="tabProfile">👤 Perfil</button>
     <button class="tab" onclick="openTab('gifts')" id="tabGifts">💌 Social</button>
+    <button class="tab" onclick="openTab('shop')" id="tabShop">🛍️ Loja</button>
   </div>
+  <!-- POWER HUD -->
+  <div id="powerHUD" style="display:flex;justify-content:center;gap:0.5rem;margin-top:0.6rem;flex-wrap:wrap"></div>
 </header>
 
 <main>
   <div id="viewGame"><div class="board" id="board"></div></div>
-
-  <!-- DAILY CHALLENGE VIEW -->
-  <div id="viewDaily" style="display:none;margin-top:1rem">
-    <div class="panel">
-      <h3>📅 Desafio Diário</h3>
-      <div id="dailyChallengeContent">
-        <p class="no-login-msg">Carregando... 🌸</p>
-      </div>
-    </div>
-  </div>
 
   <div id="viewLeaderboard" style="display:none;margin-top:1rem">
     <div class="panel">
@@ -845,6 +844,13 @@ audio{display:none}
       <div id="socialInboxView" style="display:none">
         <div id="inboxContent"><p class="no-login-msg">Faça login para ver sua caixa de entrada! 🌸</p></div>
       </div>
+    </div>
+  </div>
+
+  <div id="viewShop" style="display:none;margin-top:1rem">
+    <div class="panel">
+      <h3>🛍️ Loja de Poderes</h3>
+      <div id="shopContent"><p class="no-login-msg">Carregando... 🌸</p></div>
     </div>
   </div>
 </main>
@@ -977,6 +983,165 @@ let maxCombo=0,catsMatched=false;
 const HARD_TIME=90;
 let currentLbMode='normal';
 
+// ── COINS & INVENTORY ────────────────────────────────
+function _coinKey(){ const u=window._currentUser; return u?'coins_'+u.uid:'coins_guest'; }
+function _invKey(){ const u=window._currentUser; return u?'inventory_'+u.uid:'inventory_guest'; }
+
+function getCoins(){ return parseInt(localStorage.getItem(_coinKey())||'0'); }
+function setCoins(n){
+  const uid = window._currentUser && window._currentUser.uid;
+  localStorage.setItem(_coinKey(), String(Math.max(0,n)));
+  _renderCoinDisplay();
+  if(uid && window._syncCoinsToFirestore){
+    window._syncCoinsToFirestore(uid, Math.max(0,n), getInventory());
+  }
+}
+function addCoins(n){
+  setCoins(getCoins()+n);
+  // Toast animado
+  const t=document.createElement('div');
+  t.className='coin-toast';
+  t.innerHTML=`🪙 +${n} moedas!`;
+  document.body.appendChild(t);
+  setTimeout(()=>{t.style.opacity='0';setTimeout(()=>t.remove(),400);},2200);
+}
+
+function getInventory(){ try{ return JSON.parse(localStorage.getItem(_invKey())||'{}'); }catch(e){ return {}; } }
+function setInventory(inv){
+  const uid = window._currentUser && window._currentUser.uid;
+  localStorage.setItem(_invKey(), JSON.stringify(inv));
+  if(uid && window._syncCoinsToFirestore){
+    window._syncCoinsToFirestore(uid, getCoins(), inv);
+  }
+}
+function getItemCount(id){ return getInventory()[id]||0; }
+function addItem(id, qty=1){ const inv=getInventory(); inv[id]=(inv[id]||0)+qty; setInventory(inv); }
+function useItem(id){ const inv=getInventory(); if((inv[id]||0)<=0) return false; inv[id]--; setInventory(inv); return true; }
+
+window._renderCoinDisplay = function(){
+  const el=document.getElementById('coinDisplay');
+  if(el) el.textContent='🪙 '+getCoins();
+  renderPowerHUD();
+};
+
+// ── SHOP ─────────────────────────────────────────────
+const SHOP_ITEMS = [
+  { id:'revealer',   icon:'🔍', name:'Revelador',      desc:'Revela todas as cartas por 2s',           price:500, modes:['normal','hard'] },
+  { id:'freeze',     icon:'❄️', name:'Congelar Tempo',  desc:'Para o cronômetro por 15s (só Difícil)',   price:400, modes:['hard'] },
+  { id:'guaranteed', icon:'💣', name:'Par Garantido',   desc:'Garante o próximo par certo',              price:600, modes:['normal','hard'] },
+  { id:'xp2',        icon:'🌟', name:'Dobrador de XP',  desc:'Dobra os pontos desta partida',           price:300, modes:['normal','hard'] },
+];
+
+// Active powers for current game
+let activePowers = { freeze: false, guaranteed: false, xp2: false };
+
+function renderShop(){
+  const el=document.getElementById('shopContent'); if(!el) return;
+  const coins=getCoins();
+  el.innerHTML=`
+    <div style="text-align:center;margin-bottom:1rem">
+      <div style="font-size:1.5rem;font-weight:800;color:var(--pink-deep)">🪙 ${coins} moedas</div>
+      <div style="font-size:0.75rem;color:var(--text2);margin-top:0.2rem">Ganhe moedas completando partidas!</div>
+    </div>
+    <div class="shop-grid">
+      ${SHOP_ITEMS.map(item=>{
+        const qty=getItemCount(item.id);
+        const canBuy=coins>=item.price;
+        return `<div class="shop-card">
+          <div class="shop-icon">${item.icon}</div>
+          <div class="shop-name">${item.name}</div>
+          <div class="shop-desc">${item.desc}</div>
+          <div class="shop-qty">Estoque: <strong>${qty}</strong></div>
+          <button class="shop-btn${canBuy?'':' disabled'}" onclick="buyItem('${item.id}')" ${canBuy?'':'disabled'}>
+            🪙 ${item.price}
+          </button>
+        </div>`;
+      }).join('')}
+    </div>
+    <p style="text-align:center;font-size:0.72rem;color:var(--text2);margin-top:0.8rem">
+      💡 Normal: ~15 moedas · Difícil: ~30 moedas + bônus por tempo
+    </p>
+  `;
+}
+
+function buyItem(id){
+  const item=SHOP_ITEMS.find(i=>i.id===id); if(!item) return;
+  const coins=getCoins();
+  if(coins<item.price){ showToast('Moedas insuficientes! 🪙',true); return; }
+  setCoins(coins-item.price);
+  addItem(id);
+  showToast(`${item.icon} ${item.name} comprado!`);
+  renderShop();
+  renderPowerHUD();
+}
+
+function renderPowerHUD(){
+  const el=document.getElementById('powerHUD'); if(!el) return;
+  const inv=getInventory();
+  const inGame=timerStarted;
+  el.innerHTML=SHOP_ITEMS.map(item=>{
+    const qty=inv[item.id]||0;
+    const modeOk=item.modes.includes(gameMode);
+    const active=activePowers[item.id];
+    const canUse=qty>0&&modeOk&&inGame&&!active;
+    return `<button class="power-btn${active?' active':''}${!modeOk?' muted':''}" 
+      onclick="usePower('${item.id}')" 
+      title="${item.name}: ${item.desc}"
+      ${canUse?'':' disabled'}>
+      ${item.icon} <span class="power-qty">${qty}</span>
+    </button>`;
+  }).join('');
+}
+
+function usePower(id){
+  if(!timerStarted){ showToast('Inicie o jogo primeiro! 🎮',true); return; }
+  const item=SHOP_ITEMS.find(i=>i.id===id); if(!item) return;
+  if(!item.modes.includes(gameMode)){ showToast(`${item.icon} Só disponível no modo ${item.modes.join('/')}!`,true); return; }
+  if(getItemCount(id)<=0){ showToast('Sem estoque! Compre na loja 🛍️',true); return; }
+  if(!useItem(id)){ return; }
+
+  if(id==='revealer'){
+    // Revela todas as cartas por 2s
+    document.querySelectorAll('.card:not(.matched)').forEach(c=>c.classList.add('flipped'));
+    showToast('🔍 Cartas reveladas por 2s!');
+    setTimeout(()=>{
+      document.querySelectorAll('.card:not(.matched)').forEach(c=>{
+        if(!flipped.find(f=>f.el===c)) c.classList.remove('flipped');
+      });
+    },2000);
+  } else if(id==='freeze'){
+    if(gameMode!=='hard'){ showToast('❄️ Só no modo Difícil!',true); useItem; addItem(id); return; } // refund
+    activePowers.freeze=true;
+    clearInterval(hardTimerInterval);
+    showToast('❄️ Tempo congelado por 15s!');
+    setTimeout(()=>{
+      activePowers.freeze=false;
+      if(timerStarted&&gameMode==='hard'){
+        hardTimerInterval=setInterval(()=>{ hardTimeLeft--; updateTimerBar(); if(hardTimeLeft<=0){clearInterval(hardTimerInterval);clearInterval(timerInterval);gameOver();}},1000);
+      }
+      renderPowerHUD();
+    },15000);
+  } else if(id==='guaranteed'){
+    activePowers.guaranteed=true;
+    showToast('💣 Próximo par garantido!');
+  } else if(id==='xp2'){
+    activePowers.xp2=true;
+    showToast('🌟 XP dobrado ativado!');
+  }
+  renderPowerHUD();
+}
+
+// Ganhar moedas ao completar partida
+function awardCoins(mode, timeSeconds){
+  let base = mode==='hard' ? 30 : 15;
+  let bonus = 0;
+  if(mode==='hard') bonus = Math.floor(Math.max(0, HARD_TIME-timeSeconds)/5)*2;
+  else bonus = Math.floor(Math.max(0, 120-timeSeconds)/10)*2;
+  const total = base + bonus;
+  addCoins(total);
+  return total;
+}
+
 // THEME
 function toggleTheme(){
   const html=document.documentElement,dark=html.getAttribute('data-theme')==='dark';
@@ -1083,6 +1248,7 @@ function shuffle(arr){ return [...arr].sort(()=>Math.random()-0.5); }
 function initGame(){
   clearInterval(timerInterval);clearInterval(hardTimerInterval);stopBgMusic();
   flipped=[];matched=[];moves=0;seconds=0;locked=false;score=0;combo=0;timerStarted=false;hardTimeLeft=HARD_TIME;maxCombo=0;catsMatched=false;
+  activePowers={freeze:false,guaranteed:false,xp2:false};
   document.getElementById('moves').textContent=0;
   document.getElementById('pairs').textContent=0;
   document.getElementById('timer').textContent='0s';
@@ -1100,6 +1266,7 @@ function initGame(){
 function startTimer(){
   if(timerStarted) return; timerStarted=true; startBgMusic();
   try{getCtx().resume();}catch(e){}
+  renderPowerHUD();
   timerInterval=setInterval(()=>{ seconds++; document.getElementById('timer').textContent=seconds+'s'; },1000);
   if(gameMode==='hard'){
     hardTimerInterval=setInterval(()=>{ hardTimeLeft--; updateTimerBar(); if(hardTimeLeft<=0){clearInterval(hardTimerInterval);clearInterval(timerInterval);gameOver();} },1000);
@@ -1134,7 +1301,9 @@ function onCardClick(el,index){
 
 function checkMatch(){
   const [a,b]=flipped;
-  if(cards[a.index].emoji===cards[b.index].emoji){
+  const isMatch = activePowers.guaranteed || cards[a.index].emoji===cards[b.index].emoji;
+  if(isMatch){
+    if(activePowers.guaranteed){ activePowers.guaranteed=false; renderPowerHUD(); }
     setTimeout(()=>{
       a.el.classList.add('matched'); b.el.classList.add('matched');
       spawnBurst(a.el); matched.push(a.index,b.index); combo++;
@@ -1148,7 +1317,9 @@ function checkMatch(){
       const base=gameMode==='hard'?150:100;
       const speedBonus=Math.max(0,30-seconds)*(gameMode==='hard'?3:2);
       const comboBonus=(combo-1)*20;
-      score+=base+speedBonus+comboBonus;
+      let pts=base+speedBonus+comboBonus;
+      if(activePowers.xp2) pts*=2;
+      score+=pts;
       document.getElementById('pairs').textContent=matched.length/2;
       document.getElementById('scoreDisplay').textContent=`⭐ ${score} pts`;
       if(combo>1){document.getElementById('comboDisplay').style.display='flex';document.getElementById('comboNum').textContent=combo;}
@@ -1178,8 +1349,10 @@ function showVictory(){
   spawnConfetti();
   const savedEl=document.getElementById('scoreSaved');
   if(window._currentUser){
+    // Dar moedas
+    const coinsEarned = awardCoins(gameMode, seconds);
     window.saveScore(finalScore,gameMode,seconds,moves)
-      .then(()=>{savedEl.textContent='✅ Pontuação salva!';}).catch(()=>{savedEl.textContent='';});
+      .then(()=>{savedEl.innerHTML=`✅ Pontuação salva! <span style="color:var(--gold)">+🪙${coinsEarned}</span>`;}).catch(()=>{savedEl.textContent='';});
   } else { savedEl.textContent='💡 Faça login para salvar sua pontuação!'; }
 
   // Mostra mensagem especial só na primeira vez
@@ -1218,6 +1391,8 @@ function closeSpecialOverlay(){
 window.addEventListener('load',()=>{
   if(hasSeenSpecial()) document.getElementById('letterBtn').style.display='flex';
   updateAchBadge();
+  window._renderCoinDisplay && window._renderCoinDisplay();
+  renderPowerHUD();
 });
 
 function shareResult(){
@@ -1315,192 +1490,6 @@ function renderAchievements(){
     </div>
     <div class="ach-progress"><span>${done}</span>/${total} conquistas desbloqueadas 🏅</div>
   `;
-}
-
-// ── DAILY CHALLENGE ───────────────────────────────────
-// Generates a seed string for today (UTC date)
-function getDailyKey() {
-  const d = new Date();
-  const y = d.getUTCFullYear(), mo = String(d.getUTCMonth()+1).padStart(2,'0'), day = String(d.getUTCDate()).padStart(2,'0');
-  return `${y}-${mo}-${day}`;
-}
-
-// Simple seeded PRNG (mulberry32)
-function seededRng(seed) {
-  let s = seed;
-  return function() {
-    s |= 0; s = s + 0x6D2B79F5 | 0;
-    let t = Math.imul(s ^ s >>> 15, 1 | s);
-    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
-    return ((t ^ t >>> 14) >>> 0) / 4294967296;
-  };
-}
-
-// Hash a string to a number
-function hashStr(str) {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) { h = (Math.imul(31, h) + str.charCodeAt(i)) | 0; }
-  return Math.abs(h);
-}
-
-// Seeded shuffle
-function seededShuffle(arr, rng) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-// Build today's daily board (always Normal: 10 pairs)
-function getDailyBoard() {
-  const key = getDailyKey();
-  const seed = hashStr(key);
-  const rng = seededRng(seed);
-  const pool = seededShuffle([...CARDS_NORMAL], rng).slice(0, 10);
-  return seededShuffle([...pool, ...pool].map((c, i) => ({...c, id: i})), rng);
-}
-
-// Countdown to next midnight UTC
-function getMsUntilMidnightUTC() {
-  const now = new Date();
-  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
-  return next - now;
-}
-function formatCountdown(ms) {
-  const total = Math.floor(ms / 1000);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  return `${String(h).padStart(2,'0')}h ${String(m).padStart(2,'0')}m ${String(s).padStart(2,'0')}s`;
-}
-
-let _dailyCountdownTimer = null;
-
-async function renderDailyChallenge() {
-  const el = document.getElementById('dailyChallengeContent'); if (!el) return;
-  const user = window._currentUser;
-  const today = getDailyKey();
-  const [d, m, y] = today.split('-').reverse(); // dd/mm/yyyy
-  const dateStr = `${d}/${m}/${y}`;
-
-  // Check submission
-  let submitted = false;
-  let myResult = null;
-  if (user) {
-    try {
-      submitted = await window.checkDailySubmitted();
-    } catch(e) {}
-  }
-
-  const submittedBlock = submitted
-    ? `<div class="daily-submitted">✅ Você já participou do desafio de hoje!<br>Veja seu resultado no placar abaixo 👇</div>`
-    : '';
-
-  const loginBlock = !user
-    ? `<p class="no-login-msg">Faça login para participar do Desafio Diário! 🌸</p>`
-    : '';
-
-  const playLabel = submitted ? '✅ Já jogou hoje!' : '📅 Jogar Desafio de Hoje';
-
-  el.innerHTML = `
-    <div class="daily-header">
-      <div><span class="daily-badge">📅 Desafio Diário</span></div>
-      <div class="daily-date">🗓️ ${dateStr} · Mesmo tabuleiro para todos!</div>
-    </div>
-    <div class="daily-countdown">⏳ Próximo desafio em <span class="cd-time" id="dailyCdTime">--:--:--</span></div>
-    ${submittedBlock}
-    ${loginBlock}
-    <button class="daily-play-btn" id="dailyPlayBtn" onclick="startDailyChallenge()" ${(!user || submitted) ? 'disabled' : ''}>
-      ${playLabel}
-    </button>
-    <div class="daily-rules">
-      <strong>📋 Regras do Desafio Diário:</strong><br>
-      • Mesmo tabuleiro para todos os jogadores<br>
-      • Apenas <strong>1 tentativa por dia</strong> — jogue bem!<br>
-      • Placar separado, reiniciado a meia-noite (UTC)<br>
-      • Modo Normal — 10 pares<br>
-      • Classificação por tempo (menos tempo = melhor)
-    </div>
-    <div class="daily-lb-title">🏆 Placar de hoje</div>
-    <div id="dailyLbContent"><p class="no-login-msg">Carregando placar... 🌸</p></div>
-  `;
-
-  // Start countdown timer
-  if (_dailyCountdownTimer) clearInterval(_dailyCountdownTimer);
-  function updateCd() {
-    const cdEl = document.getElementById('dailyCdTime');
-    if (!cdEl) { clearInterval(_dailyCountdownTimer); return; }
-    cdEl.textContent = formatCountdown(getMsUntilMidnightUTC());
-  }
-  updateCd();
-  _dailyCountdownTimer = setInterval(updateCd, 1000);
-
-  // Load leaderboard
-  window._loadDailyLeaderboard && window._loadDailyLeaderboard();
-}
-
-window.renderDailyLeaderboard = function(players) {
-  const el = document.getElementById('dailyLbContent'); if (!el) return;
-  if (!players || !players.length) {
-    el.innerHTML = '<p class="no-login-msg">Nenhuma pontuação ainda hoje 🌸<br><span style="font-size:0.76rem">Seja a primeira!</span></p>';
-    return;
-  }
-  const medals = ['🥇','🥈','🥉'];
-  el.innerHTML = `<table class="lb-table"><tbody>${players.map((p, i) => {
-    const avEl = p.photoURL
-      ? `<div class="lb-avatar" style="background-image:url(${p.photoURL});background-size:cover"></div>`
-      : `<div class="lb-avatar">${p.avatar||'🌸'}</div>`;
-    const isMe = window._currentUser && window._currentUser.uid === p.uid;
-    return `<tr style="${isMe ? 'background:var(--pink-light);' : ''}">
-      <td style="text-align:center;font-size:1rem">${medals[i] || (i+1+'º')}</td>
-      <td>${avEl}</td>
-      <td style="font-weight:800;color:var(--text)">${p.name}${isMe ? ' <span style="font-size:0.7rem;color:var(--pink-deep)">(você)</span>' : ''}</td>
-      <td style="text-align:right">
-        <span class="time-badge">⏱️ ${p.time}s</span><br>
-        <span style="font-size:0.7rem;color:var(--text2)">${p.score} pts · ${p.moves} tent.</span>
-      </td>
-    </tr>`;
-  }).join('')}</tbody></table>`;
-};
-
-// Daily game state
-let _isDailyMode = false;
-let _dailyStarted = false;
-
-function startDailyChallenge() {
-  if (!window._currentUser) { showToast('Faça login para jogar! 🌸', true); return; }
-  _isDailyMode = true;
-  _dailyStarted = false;
-  // Switch to game tab and start daily board
-  openTab('game');
-  initDailyGame();
-  showToast('📅 Desafio Diário iniciado! Boa sorte! 🍀');
-}
-
-function initDailyGame() {
-  clearInterval(timerInterval); clearInterval(hardTimerInterval); stopBgMusic();
-  flipped=[]; matched=[]; moves=0; seconds=0; locked=false; score=0; combo=0; timerStarted=false; hardTimeLeft=HARD_TIME; maxCombo=0; catsMatched=false;
-  document.getElementById('moves').textContent=0;
-  document.getElementById('pairs').textContent=0;
-  document.getElementById('timer').textContent='0s';
-  document.getElementById('scoreDisplay').textContent='⭐ 0 pts';
-  document.getElementById('comboDisplay').style.display='none';
-  document.getElementById('overlay').classList.remove('show');
-  updateTimerBar();
-  // Force normal mode display
-  document.getElementById('btnNormal').classList.add('active');
-  document.getElementById('btnHard').classList.remove('active');
-  document.getElementById('timerBarWrap').classList.remove('show');
-  document.getElementById('scoreDisplay').className='score-pill';
-  document.getElementById('totalPairs').textContent=10;
-  // Use seeded daily board
-  cards = getDailyBoard();
-  gameMode = 'daily';
-  renderBoard();
-  // Show daily indicator
-  showToast('📅 Tabuleiro do Desafio — mesmo para todos!');
 }
 
 // EFFECTS
@@ -1738,8 +1727,8 @@ function handlePhotoUpload(event) {
 }
 
 // ── TABS ──────────────────────────────────────────────
-const TAB_VIEWS={game:'viewGame',daily:'viewDaily',leaderboard:'viewLeaderboard',records:'viewRecords',history:'viewHistory',achievements:'viewAchievements',profile:'viewProfile',gifts:'viewGifts'};
-const TAB_BTNS={game:'tabGame',daily:'tabDaily',leaderboard:'tabLb',records:'tabRec',history:'tabHist',achievements:'tabAch',profile:'tabProfile',gifts:'tabGifts'};
+const TAB_VIEWS={game:'viewGame',leaderboard:'viewLeaderboard',records:'viewRecords',history:'viewHistory',achievements:'viewAchievements',profile:'viewProfile',gifts:'viewGifts',shop:'viewShop'};
+const TAB_BTNS={game:'tabGame',leaderboard:'tabLb',records:'tabRec',history:'tabHist',achievements:'tabAch',profile:'tabProfile',gifts:'tabGifts',shop:'tabShop'};
 
 function openTab(tab) {
   Object.keys(TAB_VIEWS).forEach(k => {
@@ -1756,7 +1745,7 @@ function openTab(tab) {
   if (tab==='history')     window._loadHistory && window._loadHistory();
   if (tab==='achievements') renderAchievements();
   if (tab==='profile')     renderProfile();
-  if (tab==='daily')       renderDailyChallenge();
+  if (tab==='shop')        renderShop();
   if (tab==='gifts') {
     window._loadAllUsers && window._loadAllUsers();
     window._loadGifts && window._loadGifts();
