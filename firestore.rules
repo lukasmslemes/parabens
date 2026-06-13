@@ -1,0 +1,120 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Funções auxiliares ────────────────────────────────────────────────
+    function isAuth() {
+      return request.auth != null;
+    }
+    function isOwner(uid) {
+      return isAuth() && request.auth.uid == uid;
+    }
+
+    // ── scores/{uid} ─────────────────────────────────────────────────────
+    // Qualquer um logado pode ler (para placar global)
+    // Somente o próprio usuário pode escrever/atualizar
+    match /scores/{uid} {
+      allow read: if isAuth();
+      allow create, update: if isOwner(uid);
+      allow delete: if false;
+    }
+
+    // ── history/{docId} ──────────────────────────────────────────────────
+    // Apenas o próprio usuário pode criar e ler seu histórico
+    match /history/{docId} {
+      allow read: if isAuth() && resource.data.uid == request.auth.uid;
+      allow create: if isAuth() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // ── presence/{uid} ───────────────────────────────────────────────────
+    // Qualquer logado pode ler presença (para exibir online/offline)
+    // Somente o próprio usuário pode escrever sua presença
+    match /presence/{uid} {
+      allow read: if isAuth();
+      allow write: if isOwner(uid);
+    }
+
+    // ── gifts/{docId} ────────────────────────────────────────────────────
+    // Remetente cria; destinatário lê e pode marcar como lido
+    match /gifts/{docId} {
+      allow read: if isAuth() && (
+        resource.data.toUid == request.auth.uid ||
+        resource.data.fromUid == request.auth.uid
+      );
+      allow create: if isAuth()
+        && request.resource.data.fromUid == request.auth.uid
+        && request.resource.data.toUid is string
+        && request.resource.data.toUid != request.auth.uid; // não pode enviar para si mesmo
+      // Só destinatário pode marcar read=true
+      allow update: if isAuth()
+        && resource.data.toUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      allow delete: if false;
+    }
+
+    // ── messages/{docId} ─────────────────────────────────────────────────
+    // Mesmo padrão dos gifts
+    match /messages/{docId} {
+      allow read: if isAuth() && (
+        resource.data.toUid == request.auth.uid ||
+        resource.data.fromUid == request.auth.uid
+      );
+      allow create: if isAuth()
+        && request.resource.data.fromUid == request.auth.uid
+        && request.resource.data.toUid is string
+        && request.resource.data.toUid != request.auth.uid
+        && request.resource.data.text is string
+        && request.resource.data.text.size() <= 500;
+      allow update: if isAuth()
+        && resource.data.toUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      allow delete: if false;
+    }
+
+    // ── daily_scores/{docId} ─────────────────────────────────────────────
+    // Qualquer logado lê (placar diário); apenas o próprio usuário cria UMA entrada por dia
+    // (o controle de 1 submissão/dia é feito no client; a regra impede alterações)
+    match /daily_scores/{docId} {
+      allow read: if isAuth();
+      allow create: if isAuth()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.date is string
+        && request.resource.data.score is number;
+      allow update, delete: if false; // imutável após criado
+    }
+
+    // ── duels/{docId} ────────────────────────────────────────────────────
+    // player1 cria; ambos jogadores podem ler e atualizar campos permitidos
+    match /duels/{docId} {
+      allow read: if isAuth() && (
+        resource.data.player1 == request.auth.uid ||
+        resource.data.player2 == request.auth.uid
+      );
+      // Criar duelo: somente o player1
+      allow create: if isAuth()
+        && request.resource.data.player1 == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.bet is number
+        && request.resource.data.bet >= 0;
+      // Atualizar: apenas campos relacionados à resposta ou ao resultado do jogo
+      allow update: if isAuth() && (
+        resource.data.player1 == request.auth.uid ||
+        resource.data.player2 == request.auth.uid
+      );
+      allow delete: if false;
+    }
+
+    // ── fcm_tokens/{uid} ─────────────────────────────────────────────────
+    // Armazena o FCM token de cada usuário (para notificações push)
+    // Só o próprio usuário lê e escreve
+    match /fcm_tokens/{uid} {
+      allow read, write: if isOwner(uid);
+    }
+
+    // ── Bloquear tudo mais ────────────────────────────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
