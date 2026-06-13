@@ -31,33 +31,20 @@ let unsubNotif = null;
 onAuthStateChanged(auth, user => {
   window._currentUser = user;
   updateAuthUI(user);
+
+  // Esconder loading screen imediatamente — sempre, antes de qualquer outra coisa
+  const ls = document.getElementById('loadingScreen');
+  if (ls) { ls.classList.add('hide'); setTimeout(() => ls.remove(), 700); }
+
   if (user) {
-    // Aguardar todos os scripts carregarem antes de chamar funções de render
-    // Resolve race condition entre o módulo Firebase e os scripts inline
-    function _runAfterScripts(fn) {
-      if (document.readyState === 'complete') { setTimeout(fn, 50); }
-      else { window.addEventListener('load', () => setTimeout(fn, 50), { once: true }); }
-    }
-    _runAfterScripts(() => {
-      window._loadLeaderboard && window._loadLeaderboard();
-      window._loadPersonalRecords && window._loadPersonalRecords();
-      window._loadHistory && window._loadHistory();
-      window._loadAllUsers && window._loadAllUsers();
-    });
     startNotifListener(user.uid);
-    // Inicializar FCM push (só se permissão já concedida)
     if (typeof Notification !== 'undefined' && Notification.permission === 'granted') { initFCM(user.uid); }
-    // Set online presence
     setOnlinePresence(user.uid, true);
-    // Duel challenge listener
     window._startDuelListener && window._startDuelListener(user.uid);
-    // Load coins and inventory from Firestore (overrides localStorage)
     window._loadCoinsFromFirestore && window._loadCoinsFromFirestore(user.uid).then(({ coins, inventory }) => {
       if (coins !== null) {
-        // Usuário existente — carregar do Firestore
         localStorage.setItem('coins_' + user.uid, String(coins));
       } else {
-        // Novo usuário — começar com 500 moedas
         localStorage.setItem('coins_' + user.uid, '500');
         window._syncCoinsToFirestore && window._syncCoinsToFirestore(user.uid, 500, {});
         window.showToast && window.showToast('🎉 Bem-vinda! Você ganhou 500 moedas de boas-vindas! 🪙');
@@ -67,41 +54,28 @@ onAuthStateChanged(auth, user => {
       }
       window._renderCoinDisplay && window._renderCoinDisplay();
     });
-  } else {
-    if (unsubNotif) { unsubNotif(); unsubNotif = null; }
-  }
-  // Hide loading screen once auth state is known
-  const ls = document.getElementById('loadingScreen');
-  if (ls) { ls.classList.add('hide'); setTimeout(() => ls.remove(), 700); }
 
-
-  // Corrige bug: openTab pode ter sido chamado antes do auth resolver.
-  // Após o auth estar pronto, recarrega a aba ativa se ela depende de login.
-  if (user) {
-    // Recarregar aba ativa após auth + scripts estarem prontos
-    function _runAfterScripts2(fn) {
-      if (document.readyState === 'complete') { setTimeout(fn, 150); }
-      else { window.addEventListener('load', () => setTimeout(fn, 150), { once: true }); }
-    }
-    _runAfterScripts2(() => {
-      const activeTab = Object.keys(TAB_BTNS).find(k => {
-        const btn = document.getElementById(TAB_BTNS[k]);
+    // Carregar dados após 500ms — simples e confiável em todos os browsers
+    // Garante que os scripts inline já foram definidos
+    setTimeout(() => {
+      window._loadLeaderboard && window._loadLeaderboard();
+      window._loadPersonalRecords && window._loadPersonalRecords();
+      window._loadHistory && window._loadHistory();
+      window._loadAllUsers && window._loadAllUsers();
+      // Recarregar aba ativa se necessário
+      const activeTab = Object.keys(TAB_BTNS || {}).find(k => {
+        const btn = document.getElementById((TAB_BTNS||{})[k]);
         return btn && btn.classList.contains('active');
       });
-      if (activeTab === 'history') {
-        window._loadHistory && window._loadHistory();
-      } else if (activeTab === 'gifts') {
-        window._loadAllUsers && window._loadAllUsers();
+      if (activeTab === 'gifts') {
         window._loadGifts && window._loadGifts();
         window._loadMessages && window._loadMessages();
-      } else if (activeTab === 'records') {
-        window._loadPersonalRecords && window._loadPersonalRecords();
-      } else if (activeTab === 'leaderboard') {
-        window._loadLeaderboard && window._loadLeaderboard();
       } else if (activeTab === 'daily') {
         window.renderDailyTab && window.renderDailyTab();
       }
-    });
+    }, 500);
+  } else {
+    if (unsubNotif) { unsubNotif(); unsubNotif = null; }
   }
 });
 
