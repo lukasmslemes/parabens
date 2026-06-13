@@ -36,7 +36,10 @@ onAuthStateChanged(auth, user => {
 
   if (user) {
     startNotifListener(user.uid);
-    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') { initFCM(user.uid); }
+    // FCM só se já tem permissão — nunca bloqueia o fluxo principal
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      setTimeout(() => initFCM(user.uid), 2000); // delay para não concorrer com carregamento
+    }
     setOnlinePresence(user.uid, true);
     window._startDuelListener && window._startDuelListener(user.uid);
     window._loadCoinsFromFirestore && window._loadCoinsFromFirestore(user.uid).then(({ coins, inventory }) => {
@@ -53,14 +56,11 @@ onAuthStateChanged(auth, user => {
       window._renderCoinDisplay && window._renderCoinDisplay();
     });
 
-    // Carregar dados após 500ms — simples e confiável em todos os browsers
-    // Garante que os scripts inline já foram definidos
     setTimeout(() => {
       window._loadLeaderboard && window._loadLeaderboard();
       window._loadPersonalRecords && window._loadPersonalRecords();
       window._loadHistory && window._loadHistory();
       window._loadAllUsers && window._loadAllUsers();
-      // Recarregar aba ativa se necessário
       const activeTab = Object.keys(TAB_BTNS || {}).find(k => {
         const btn = document.getElementById((TAB_BTNS||{})[k]);
         return btn && btn.classList.contains('active');
@@ -308,7 +308,45 @@ function startNotifListener(uid) {
   unsubNotif = () => { unsubG(); unsubM(); };
 }
 
-// ── DUELS ─────────────────────────────────────────────
+// ── FIREBASE CLOUD MESSAGING (Push Notifications) ──────
+// Import dinâmico — não bloqueia o módulo principal no Chrome
+async function initFCM(uid) {
+  if (!('Notification' in window)) return;
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    const { getMessaging, getToken, onMessage } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js");
+    const _messaging = getMessaging(app);
+    const swReg = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') return;
+    const token = await getToken(_messaging, {
+      vapidKey: 'SUA_VAPID_KEY_AQUI', // substitua pela sua VAPID key do Firebase Console
+      serviceWorkerRegistration: swReg
+    });
+    if (!token) return;
+    await setDoc(doc(db, 'fcm_tokens', uid), { token, uid, updatedAt: serverTimestamp() }, { merge: true });
+    onMessage(_messaging, payload => {
+      const n = payload.notification || {};
+      const title = n.title || '🌸 Jogo da Memória';
+      const body  = n.body  || 'Nova notificação!';
+      window.showToast && window.showToast(`${title}: ${body}`);
+      if (document.visibilityState !== 'visible') {
+        new Notification(title, { body, icon: '/icon-192.png' });
+      }
+    });
+  } catch(e) { console.warn('FCM init error:', e); }
+}
+
+window.togglePushNotifications = async function() {
+  const user = window._currentUser;
+  if (!user) { window.showToast && window.showToast('Faça login para ativar notificações!', true); return; }
+  if (typeof Notification !== 'undefined' && Notification.permission === 'denied') {
+    window.showToast && window.showToast('Notificações bloqueadas. Permita nas configurações do navegador.', true);
+    return;
+  }
+  await initFCM(user.uid);
+  window.showToast && window.showToast('🔔 Notificações push ativadas!');
+};
 window.sendDuelChallenge = async function(toUid, toName, bet) {
   const user = window._currentUser; if (!user) return;
   const fromName = user.displayName || user.email.split('@')[0];
@@ -2168,8 +2206,8 @@ function handlePhotoUpload(event) {
 }
 
 // ── TABS ──────────────────────────────────────────────
-const TAB_VIEWS={game:'viewGame',leaderboard:'viewLeaderboard',records:'viewRecords',history:'viewHistory',achievements:'viewAchievements',profile:'viewProfile',gifts:'viewGifts',shop:'viewShop',daily:'viewDaily',duel:'viewDuel'};
-const TAB_BTNS={game:'tabGame',leaderboard:'tabLb',records:'tabRec',history:'tabHist',achievements:'tabAch',profile:'tabProfile',gifts:'tabGifts',shop:'tabShop',daily:'tabDaily',duel:'tabDuel'};
+const TAB_VIEWS={game:'viewGame',leaderboard:'viewLeaderboard',records:'viewRecords',history:'viewHistory',achievements:'viewAchievements',profile:'viewProfile',gifts:'viewGifts',shop:'viewShop',inventory:'viewInventory',daily:'viewDaily',duel:'viewDuel'};
+const TAB_BTNS={game:'tabGame',leaderboard:'tabLb',records:'tabRec',history:'tabHist',achievements:'tabAch',profile:'tabProfile',gifts:'tabGifts',shop:'tabShop',inventory:'tabInventory',daily:'tabDaily',duel:'tabDuel'};
 
 function openTab(tab) {
   Object.keys(TAB_VIEWS).forEach(k => {
