@@ -1030,7 +1030,7 @@ setTimeout(function() {
     </div>
     <div id="authLoggedIn">
       <div class="notif-wrap">
-        <button class="notif-bell" id="notifBell" onclick="openTab('gifts')" title="Presentes e mensagens">🔔</button>
+        <button class="notif-bell" id="notifBell" onclick="openTab('gifts'); setTimeout(()=>switchSocialTab('inbox'),100);" title="Presentes e mensagens">🔔</button>
         <div class="notif-badge" id="notifBadge">0</div>
       </div>
       <div class="coin-chip" onclick="openTab('shop')" title="Loja de poderes">
@@ -2507,6 +2507,14 @@ function switchSocialTab(tab) {
   document.getElementById('socialSendView').style.display = tab==='send' ? 'block' : 'none';
   document.getElementById('socialInboxView').style.display = tab==='inbox' ? 'block' : 'none';
   if (tab==='inbox') {
+    const user = window._currentUser;
+    const el = document.getElementById('inboxContent');
+    if (!user) {
+      if (el) el.innerHTML = '<p class="no-login-msg">Faça login para ver sua caixa de entrada! 🌸</p>';
+      return;
+    }
+    // Mostrar loading enquanto busca
+    if (el) el.innerHTML = '<p class="no-login-msg">Carregando... 🌸</p>';
     window._loadMessages && window._loadMessages();
     window._loadGifts && window._loadGifts();
     window.markMessagesRead && window.markMessagesRead();
