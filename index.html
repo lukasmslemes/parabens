@@ -37,6 +37,8 @@ onAuthStateChanged(auth, user => {
     startNotifListener(user.uid);
     // Set online presence
     setOnlinePresence(user.uid, true);
+    // Duel challenge listener
+    window._startDuelListener && window._startDuelListener(user.uid);
     // Load coins and inventory from Firestore (overrides localStorage)
     window._loadCoinsFromFirestore && window._loadCoinsFromFirestore(user.uid).then(({ coins, inventory }) => {
       if (coins !== null) {
@@ -285,6 +287,50 @@ function startNotifListener(uid) {
   const unsubM = onSnapshot(qM, snap => { unreadMsgs = snap.size; updateBadge(); });
   unsubNotif = () => { unsubG(); unsubM(); };
 }
+
+// ── DUELS ─────────────────────────────────────────────
+window.sendDuelChallenge = async function(toUid, toName, bet) {
+  const user = window._currentUser; if (!user) return;
+  const fromName = user.displayName || user.email.split('@')[0];
+  const av = localStorage.getItem('selectedAvatar') || '🌸';
+  const coins = window._getCoins ? window._getCoins() : 0;
+  if (coins < bet) { window.showToast('Moedas insuficientes! 🪙', true); return; }
+  const seed = Math.floor(Math.random() * 999999);
+  await addDoc(collection(db, 'duels'), {
+    player1: user.uid, player1Name: fromName, player1Avatar: av,
+    player2: toUid, player2Name: toName,
+    seed, bet, status: 'pending',
+    createdAt: serverTimestamp()
+  });
+  window.showToast(`⚔️ Desafio enviado para ${toName}!`);
+};
+
+window.respondDuel = async function(duelId, accept) {
+  const user = window._currentUser; if (!user) return;
+  await updateDoc(doc(db, 'duels', duelId), {
+    status: accept ? 'accepted' : 'declined',
+    respondedAt: serverTimestamp()
+  });
+  if (accept) {
+    window.showToast('⚔️ Duelo aceito! Em breve o tabuleiro abrirá...');
+  } else {
+    window.showToast('Desafio recusado.');
+  }
+};
+
+let _unsubDuels = null;
+window._startDuelListener = function(uid) {
+  if (_unsubDuels) { _unsubDuels(); }
+  const q = query(collection(db, 'duels'),
+    where('player2', '==', uid),
+    where('status', '==', 'pending')
+  );
+  _unsubDuels = onSnapshot(q, snap => {
+    const challenges = [];
+    snap.forEach(d => challenges.push({ id: d.id, ...d.data() }));
+    window._onDuelChallenge && window._onDuelChallenge(challenges);
+  });
+};
 
 window.markGiftsRead = async function() {
   const user = window._currentUser; if (!user) return;
@@ -557,6 +603,8 @@ main{position:relative;z-index:10;max-width:860px;margin:1.2rem auto 0;padding:0
 .btn-tiny:hover{border-color:var(--pink-deep);background:var(--pink-light)}
 .btn-tiny.msg{color:#7c3aed;border-color:#ede9fe}
 .btn-tiny.msg:hover{background:#ede9fe}
+.btn-tiny.duel{color:#dc2626;border-color:#fecaca}
+.btn-tiny.duel:hover{background:#fee2e2}
 
 .gift-select-label{font-size:0.78rem;font-weight:700;color:var(--text2);text-align:center;margin-bottom:0.6rem}
 .gift-options{display:flex;flex-wrap:wrap;gap:0.5rem;justify-content:center;margin:0.6rem 0}
@@ -947,6 +995,31 @@ audio{display:none}
 <!-- HIDDEN FILE INPUT -->
 <input type="file" id="photoFileInput" accept="image/*" onchange="handlePhotoUpload(event)">
 
+<!-- DUEL CHALLENGE MODAL (enviar) -->
+<div class="modal-bg" id="duelModalBg">
+  <div class="modal">
+    <button class="modal-close" onclick="closeDuelModal()">✕</button>
+    <h3>⚔️ Desafiar Jogador</h3>
+    <p style="text-align:center;font-size:0.85rem;color:var(--text2);margin-bottom:1rem">Desafiando: <strong id="duelToName" style="color:var(--pink-deep)"></strong></p>
+    <div class="auth-field">
+      <label>Aposta em moedas 🪙</label>
+      <input type="number" id="duelBetInput" min="0" max="500" value="50" style="padding:0.6rem 0.9rem;border:2px solid var(--border);border-radius:10px;font-family:'Nunito',sans-serif;font-size:1rem;outline:none;background:var(--surface2);color:var(--text);width:100%">
+    </div>
+    <p style="font-size:0.72rem;color:var(--text2);text-align:center;margin-bottom:1rem">O vencedor leva tudo! Aposta 0 = duelo amistoso 🌸</p>
+    <button class="btn-submit" onclick="confirmSendDuel()">⚔️ Enviar Desafio!</button>
+  </div>
+</div>
+
+<!-- DUEL INCOMING NOTIFICATION -->
+<div id="duelNotifBanner" style="display:none;position:fixed;top:5rem;left:50%;transform:translateX(-50%);z-index:400;background:var(--surface);border:2px solid var(--pink-deep);border-radius:20px;padding:1rem 1.4rem;box-shadow:0 8px 32px rgba(233,30,140,0.25);max-width:340px;width:92%;animation:victoryPop 0.4s cubic-bezier(0.34,1.56,0.64,1) both">
+  <div style="font-weight:800;color:var(--pink-deep);font-size:1rem;margin-bottom:0.4rem">⚔️ Desafio recebido!</div>
+  <div id="duelNotifText" style="font-size:0.85rem;color:var(--text);margin-bottom:0.8rem"></div>
+  <div style="display:flex;gap:0.5rem;justify-content:center">
+    <button class="btn-submit" id="duelAcceptBtn" style="flex:1;padding:0.5rem" onclick="answerDuel(true)">✅ Aceitar</button>
+    <button class="btn-auth" id="duelDeclineBtn" style="flex:1;padding:0.5rem" onclick="answerDuel(false)">❌ Recusar</button>
+  </div>
+</div>
+
 <script>
 const CARDS_NORMAL=[
   {emoji:'🐱',label:'Gatinho'},{emoji:'🐾',label:'Patinhas'},
@@ -988,6 +1061,7 @@ function _coinKey(){ const u=window._currentUser; return u?'coins_'+u.uid:'coins
 function _invKey(){ const u=window._currentUser; return u?'inventory_'+u.uid:'inventory_guest'; }
 
 function getCoins(){ return parseInt(localStorage.getItem(_coinKey())||'0'); }
+window._getCoins = getCoins;
 function setCoins(n){
   const uid = window._currentUser && window._currentUser.uid;
   localStorage.setItem(_coinKey(), String(Math.max(0,n)));
@@ -1804,6 +1878,7 @@ window.renderGiftTargets = function(users) {
           <div class="gift-target-actions">
             <button class="btn-tiny" onclick="openGiftModal('${u.id}','${u.name.replace(/'/g,"\\'")}')">🎁 Presente</button>
             <button class="btn-tiny msg" onclick="openMsgModal('${u.id}','${u.name.replace(/'/g,"\\'")}')">💌 Mensagem</button>
+            <button class="btn-tiny duel" onclick="openDuelModal('${u.id}','${u.name.replace(/'/g,"\\'")}')">⚔️ Desafiar</button>
           </div>
         </div>`;
       }).join('')}</div>
@@ -1912,6 +1987,42 @@ function confirmSendMsg(){
 }
 function closeMsgModal(){ document.getElementById('msgModalBg').classList.remove('show'); }
 
+// ── DUEL MODAL ────────────────────────────────────────
+let duelToUid=null, duelToNameVar=null, pendingDuelId=null;
+
+function openDuelModal(uid, name) {
+  if (!window._currentUser) { showToast('Faça login para desafiar! 🌸', true); return; }
+  duelToUid=uid; duelToNameVar=name;
+  document.getElementById('duelToName').textContent=name;
+  document.getElementById('duelBetInput').value='50';
+  document.getElementById('duelModalBg').classList.add('show');
+}
+function closeDuelModal() { document.getElementById('duelModalBg').classList.remove('show'); }
+function confirmSendDuel() {
+  const bet = parseInt(document.getElementById('duelBetInput').value)||0;
+  if (bet < 0) { showToast('Aposta inválida!', true); return; }
+  window.sendDuelChallenge(duelToUid, duelToNameVar, bet);
+  closeDuelModal();
+}
+
+// Handler para desafios recebidos
+window._onDuelChallenge = function(challenges) {
+  const banner = document.getElementById('duelNotifBanner');
+  if (!challenges.length) { banner.style.display='none'; pendingDuelId=null; return; }
+  const c = challenges[0]; // mostra o mais recente
+  pendingDuelId = c.id;
+  const betText = c.bet > 0 ? ` · 🪙 ${c.bet} moedas em jogo` : ' · Duelo amistoso';
+  document.getElementById('duelNotifText').textContent = `${c.player1Avatar||'🌸'} ${c.player1Name} quer duelar!${betText}`;
+  banner.style.display='block';
+};
+
+function answerDuel(accept) {
+  if (!pendingDuelId) return;
+  window.respondDuel(pendingDuelId, accept);
+  document.getElementById('duelNotifBanner').style.display='none';
+  pendingDuelId=null;
+}
+
 // ── AUTH MODAL ────────────────────────────────────────
 function openAuthModal(tab){document.getElementById('authModalBg').classList.add('show');switchAuthTab(tab);}
 function closeAuthModal(){document.getElementById('authModalBg').classList.remove('show');}
@@ -1924,9 +2035,9 @@ function switchAuthTab(tab){
   document.getElementById('authSubmitBtn').onclick=()=>doEmailAuth(tab);
 }
 
-['authModalBg','giftModalBg','msgModalBg'].forEach(id => {
+['authModalBg','giftModalBg','msgModalBg','duelModalBg'].forEach(id => {
   const el = document.getElementById(id);
-  if (el) el.addEventListener('click', e => { if (e.target === el) { closeAuthModal(); closeGiftModal(); closeMsgModal(); } });
+  if (el) el.addEventListener('click', e => { if (e.target === el) { closeAuthModal(); closeGiftModal(); closeMsgModal(); closeDuelModal(); } });
 });
 
 // ── TOAST ─────────────────────────────────────────────
